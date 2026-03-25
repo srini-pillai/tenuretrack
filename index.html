@@ -463,6 +463,104 @@ function StatCard({label,value,sub,accent,icon,onClick}){
   </div>);
 }
 
+function ExemptedTillInput({storedVal, onCommit, inputStyle, wrapStyle}){
+  const display = formatExemptedTill(storedVal||"");
+  const [draft,   setDraft]   = useState(display);
+  const [err,     setErr]     = useState("");
+  const [showPicker, setShowPicker] = useState(false);
+  const wrapRef = React.useRef(null);
+
+  // Sync when storedVal changes externally
+  React.useEffect(()=>{
+    setDraft(formatExemptedTill(storedVal||""));
+    setErr("");
+  },[storedVal]);
+
+  // Close picker on outside click
+  React.useEffect(()=>{
+    if(!showPicker) return;
+    const handler = e => {
+      if(wrapRef.current && !wrapRef.current.contains(e.target)) setShowPicker(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return ()=>document.removeEventListener("mousedown", handler);
+  },[showPicker]);
+
+  // Convert MM/YY → YYYY-MM for the month picker
+  const toPickerVal = ()=>{
+    const m = display.match(/^(\d{1,2})\/(\d{2})$/);
+    if(!m) return "";
+    const month = m[1].padStart(2,"0");
+    const year  = "20"+m[2];
+    return year+"-"+month;
+  };
+
+  const handleTextBlur = ()=>{
+    const v = draft.trim();
+    if(!v){ onCommit(""); setErr(""); return; }
+    if(isValidMMYY(v)){ onCommit(v); setErr(""); }
+    else{ setErr("Use MM/YY format (e.g. 7/26)"); setDraft(display); }
+  };
+
+  const handlePickerChange = e=>{
+    const val = e.target.value; // "YYYY-MM"
+    if(!val){ onCommit(""); setDraft(""); setShowPicker(false); return; }
+    const [y,m] = val.split("-");
+    const mmyy  = parseInt(m,10)+"/"+y.slice(2);
+    onCommit(mmyy);
+    setDraft(mmyy);
+    setErr("");
+    setShowPicker(false);
+  };
+
+  return(
+    <div ref={wrapRef} style={{position:"relative",display:"inline-flex",alignItems:"center",gap:3,...(wrapStyle||{})}}>
+      <input
+        value={draft}
+        onChange={e=>{setDraft(e.target.value);setErr("");}}
+        onBlur={handleTextBlur}
+        onFocus={()=>setShowPicker(true)}
+        placeholder="MM/YY"
+        maxLength={10}
+        style={{...inputStyle,borderColor:err?"#f87171":undefined}}
+      />
+      <button
+        type="button"
+        onMouseDown={e=>{e.preventDefault();setShowPicker(p=>!p);}}
+        title="Pick month"
+        style={{flexShrink:0,width:20,height:20,padding:0,border:"1px solid #334155",
+          borderRadius:4,background:"#1e293b",color:"#64748b",cursor:"pointer",
+          display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,lineHeight:1}}>
+        &#128197;
+      </button>
+      {err&&<div style={{position:"absolute",top:"100%",left:0,zIndex:30,marginTop:3,
+        padding:"4px 8px",background:"#7f1d1d",border:"1px solid #dc2626",borderRadius:5,
+        color:"#fca5a5",fontSize:10,whiteSpace:"nowrap",pointerEvents:"none"}}>{err}</div>}
+      {showPicker&&(
+        <div style={{position:"absolute",top:"100%",left:0,zIndex:30,marginTop:4,
+          background:"#1e293b",border:"1px solid #334155",borderRadius:8,
+          padding:"12px 14px",boxShadow:"0 8px 24px rgba(0,0,0,0.6)"}}>
+          <div style={{color:"#94a3b8",fontSize:10,fontWeight:700,textTransform:"uppercase",
+            letterSpacing:"0.06em",marginBottom:8}}>Select Month</div>
+          <input
+            type="month"
+            value={toPickerVal()}
+            onChange={handlePickerChange}
+            style={{background:"#0f172a",border:"1px solid #334155",borderRadius:6,
+              color:"#e2e8f0",fontSize:13,padding:"6px 10px",outline:"none",
+              colorScheme:"dark"}}
+          />
+          <div style={{marginTop:8,display:"flex",justifyContent:"flex-end"}}>
+            <button onMouseDown={e=>{e.preventDefault();setShowPicker(false);}}
+              style={{fontSize:11,color:"#64748b",background:"transparent",border:"none",
+                cursor:"pointer",padding:"2px 6px"}}>Cancel</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AssociateDialog({title,associates,onClose}){
   const [search,setSearch]=useState("");
   const [localExtra,setLocalExtra]=useState(()=>lsExtraLoad());
@@ -577,8 +675,11 @@ function AssociateDialog({title,associates,onClose}){
       </select>);
     }
     if(c==="Exempted Till"){
-      return(<input value={formatExemptedTill(val)} onChange={e=>setField(id,c,e.target.value)}
-        placeholder="MM/YY" maxLength={10} style={{...INP,minWidth:72,width:80}}/>);
+      return(<ExemptedTillInput
+        storedVal={val}
+        onCommit={v=>setField(id,c,v)}
+        inputStyle={{...INP,minWidth:72,width:80}}
+      />);
     }
     if(c==="Email Approval"){
       return(<select value={val} onChange={e=>setField(id,c,e.target.value)} style={{...INP,minWidth:80}}>
@@ -1798,6 +1899,12 @@ function deriveRevisedTenure(exemptedTill,originalTenure){
   const dm=(now.getFullYear()-exemptDate.getFullYear())*12+(now.getMonth()-exemptDate.getMonth());
   if(dm<8)return"<8 months";if(dm<10)return"8 to 10 months";if(dm<=12)return"10 to 12 months";return"> 12 months";
 }
+function isValidMMYY(val){
+  if(!val||!val.trim()) return true; // blank is allowed
+  return /^\d{1,2}\/\d{2}$/.test(val.trim()) &&
+    parseInt(val.trim().split("/")[0],10)>=1 &&
+    parseInt(val.trim().split("/")[0],10)<=12;
+}
 function formatExemptedTill(val){
   if(!val)return"";
   const v=String(val).trim();
@@ -1979,9 +2086,12 @@ function BaseDataTable({baseData}){
               </td>);
             }
             if(col==="Exempted Till"){
-              const displayVal=formatExemptedTill(val);
               return(<td key={col} style={{padding:"6px 8px",whiteSpace:"nowrap",minWidth:90}}>
-                <input value={displayVal} onChange={e=>setCell(id,col,e.target.value)} placeholder="MM/YY" maxLength={5} style={{...EDITABLE_STYLE,width:72}} />
+                <ExemptedTillInput
+                  storedVal={val}
+                  onCommit={v=>setCell(id,col,v)}
+                  inputStyle={{...EDITABLE_STYLE,width:72}}
+                />
               </td>);
             }
             if(col==="Exempted Category"){
