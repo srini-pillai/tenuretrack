@@ -211,7 +211,8 @@ async function saveBaseDataToSharePoint(rows, onProgress) {
     rowCount:rows.length,
     rows,
     portfolioLeads: lsPortfolioLoad(),
-    exemptCategories: lsExemptCatLoad()
+    exemptCategories: lsExemptCatLoad(),
+    extra: lsExtraLoad()
   };
   onProgress("Saving to local cache...",10); lsSave(rows);
   try {
@@ -241,6 +242,41 @@ async function saveBaseDataToSharePoint(rows, onProgress) {
   onProgress("Downloaded — copy to your TenureTrack OneDrive folder to sync",100);
   return {ok:true,method:"download",rowCount:rows.length};
 }
+async function saveExtraToSP(extraData, onDone, onErr) {
+  // Save extra cols (Portfolio Lead, Exempted Category etc) to SharePoint
+  // by building the full payload with existing rows + updated extra
+  try {
+    const cached = lsLoad();
+    const rows = (cached && cached.rows) ? cached.rows : [];
+    const payload = {
+      savedAt: new Date().toISOString(),
+      rowCount: rows.length,
+      rows,
+      portfolioLeads: lsPortfolioLoad(),
+      exemptCategories: lsExemptCatLoad(),
+      extra: extraData
+    };
+    // Try Graph first, then SP REST, then PA, then FSA
+    let saved = false;
+    try { await graphUploadFile("tenure_data.json", payload); saved=true; } catch(e){}
+    if(!saved){ try { await spRESTSave(payload); saved=true; } catch(e){} }
+    if(!saved && POWER_AUTOMATE_URL){
+      try {
+        await fetch(POWER_AUTOMATE_URL,{method:"POST",headers:{"Content-Type":"text/plain"},body:JSON.stringify(payload),mode:"no-cors"});
+        saved=true;
+      } catch(e){}
+    }
+    if(!saved && _fsaFileHandle){
+      try { await fsaWriteHandle(_fsaFileHandle,payload); saved=true; } catch(e){}
+    }
+    if(saved && onDone) onDone();
+    else if(!saved && onErr) onErr("Could not reach SharePoint — changes saved locally only");
+  } catch(e) {
+    console.warn("saveExtraToSP failed:",e.message);
+    if(onErr) onErr(e.message);
+  }
+}
+
 function isCacheStale() {
   // Returns true if localStorage was saved before the current DATA_VERSION,
   // ensuring every new HTML deployment automatically invalidates stale caches.
@@ -388,7 +424,7 @@ function deriveTenure(md){
   if(!md)return"Unknown";const now=new Date();const dm=(now.getFullYear()-md.getFullYear())*12+(now.getMonth()-md.getMonth());
   if(dm<8)return"<8 months";if(dm<10)return"8 to 10 months";if(dm<=12)return"10 to 12 months";return"> 12 months";
 }
-const ESA_COLUMNS=["Associate ID","Associate Name","Grade Name","Project Billability","Location Group Name","Is Onsite","Project Id","Project Name","Project Type","Customer ID","Customer Name","Manager ID","Manager Name","Practice Area","Total FTE"];
+const ESA_COLUMNS=["Associate ID","Associate Name","Grade Name","Project Billability","Location Group Name","Is Onsite","Project Id","Project Name","Project Type","Customer ID","Customer Name","Manager ID","Manager Name","Practice Area","Total FTE","Allocation Start Date"];
 
 const Icon=({name,size=18})=>{
   const icons={
@@ -429,30 +465,202 @@ function StatCard({label,value,sub,accent,icon,onClick}){
 
 function AssociateDialog({title,associates,onClose}){
   const [search,setSearch]=useState("");
-  const extra=lsExtraLoad();
+  const [localExtra,setLocalExtra]=useState(()=>lsExtraLoad());
+  const [dirty,setDirty]=useState({});
+  const [saved,setSaved]=useState(false);
+  const [saving,setSaving]=useState(false);
+  const [saveError,setSaveError]=useState("");
   const plLeads=lsPortfolioLoad();
-  const plMap=Object.fromEntries(plLeads.filter(l=>l.id).map(l=>[l.id,l.name?`${l.name} (${l.id})`:l.id]));
-  const enriched=associates.map(r=>{const id=String(r["Associate ID"]??"").trim();const ex=extra[id]||{};const et=ex["Exempted Till"]||"";const plId=ex["Portfolio Lead"]||"";return{...r,"Portfolio Lead":plId?(plMap[plId]||plId):"","Exempted Category":ex["Exempted Category"]||"","Exempted Till":et,"Revised Tenure":et?deriveRevisedTenure(et,r.Tenure):(ex["Revised Tenure"]||""),"Email Approval":ex["Email Approval"]||""};});
-  const filtered=enriched.filter(r=>!search||Object.values(r).some(v=>String(v).toLowerCase().includes(search.toLowerCase())));
-  const cols=["Associate ID","Associate Name","Grade Name","Project Billability","Location Group Name","Manager Name","Practice Area","Month","Tenure","Portfolio Lead","Exempted Category","Exempted Till","Revised Tenure","Email Approval"];
+  const exemptCats=lsExemptCatLoad();
+
+  // Deduplicate by Associate ID, collect all project IDs/names per associate
+  const uniqueRows=useMemo(()=>{
+    const map={};
+    associates.forEach(r=>{
+      const id=String(r["Associate ID"]??"").trim();
+      if(!id) return;
+      if(!map[id]) map[id]={...r,_projects:[]};
+      const pid=String(r["Project Id"]||"").trim();
+      const pname=String(r["Project Name"]||"").trim();
+      if(pid||pname){
+        const exists=map[id]._projects.some(p=>p.id===pid&&p.name===pname);
+        if(!exists) map[id]._projects.push({id:pid,name:pname});
+      }
+    });
+    return Object.values(map);
+  },[associates]);
+
+  const setField=(id,field,val)=>{
+    setLocalExtra(prev=>{
+      const updated={...prev,[id]:{...(prev[id]||{}),[field]:val}};
+      if(field==="Exempted Till"){
+        const origTenure=uniqueRows.find(r=>String(r["Associate ID"]??"").trim()===id)?.Tenure||"";
+        updated[id]["Revised Tenure"]=deriveRevisedTenure(formatExemptedTill(val),origTenure);
+      }
+      return updated;
+    });
+    setDirty(prev=>({...prev,[id]:true}));
+    setSaved(false);
+  };
+
+  const handleSave=()=>{
+    lsExtraSave(localExtra);
+    setDirty({});
+    setSaving(true);
+    setSaveError("");
+    saveExtraToSP(
+      localExtra,
+      ()=>{ setSaving(false); setSaved(true); setTimeout(()=>setSaved(false),4000); },
+      (err)=>{ setSaving(false); setSaved(true); setSaveError("Saved locally. SP sync failed: "+err); setTimeout(()=>{setSaved(false);setSaveError("");},6000); }
+    );
+  };
+
+  const enriched=useMemo(()=>uniqueRows.map(r=>{
+    const id=String(r["Associate ID"]??"").trim();
+    const ex=localExtra[id]||{};
+    const et=ex["Exempted Till"]||"";
+    const plId=ex["Portfolio Lead"]||"";
+    const plObj=plLeads.find(l=>l.id===plId);
+    const plDisplay=plObj?(plObj.name?(plObj.name+" ("+plId+")"):(plId)):plId;
+    return{...r,
+      "_plId":plId,
+      "Portfolio Lead":plDisplay,
+      "Exempted Category":ex["Exempted Category"]||"",
+      "Exempted Till":et,
+      "Revised Tenure":et?deriveRevisedTenure(formatExemptedTill(et),r.Tenure):(ex["Revised Tenure"]||""),
+      "Email Approval":ex["Email Approval"]||"",
+      "Comments":ex["Comments"]||""
+    };
+  }),[uniqueRows,localExtra,plLeads]);
+
+  const filtered=enriched.filter(r=>{
+    if(!search) return true;
+    const q=search.toLowerCase();
+    return Object.entries(r).some(([k,v])=>k!=="_projects"&&String(v).toLowerCase().includes(q))
+      ||r._projects.some(p=>(p.id+p.name).toLowerCase().includes(q));
+  });
+
+  const EDITABLE=["Portfolio Lead","Exempted Category","Exempted Till","Email Approval","Comments"];
+  const COLS=["Associate ID","Associate Name","Grade Name","Project Billability","FTE_CON","Location Group Name","Manager Name","Practice Area","Projects","Month","Tenure","Portfolio Lead","Exempted Category","Exempted Till","Revised Tenure","Email Approval","Comments"];
+  const tCol={"<8 months":"#38bdf8","8 to 10 months":"#a78bfa","10 to 12 months":"#fb923c","> 12 months":"#f87171"};
+  const INP={background:"#0f172a",border:"1px solid #334155",borderRadius:5,color:"#e2e8f0",fontSize:11,padding:"3px 6px",outline:"none",width:"100%",boxSizing:"border-box"};
+
+  const renderCell=(row,c)=>{
+    const id=String(row["Associate ID"]??"").trim();
+    const val=row[c]??"";
+    if(c==="Projects"){
+      const projs=row._projects||[];
+      if(!projs.length) return <span style={{color:"#334155"}}>-</span>;
+      return(<div style={{display:"flex",flexDirection:"column",gap:3}}>
+        {projs.map((p,i)=>(<div key={i} style={{fontSize:10,lineHeight:1.4}}>
+          <span style={{color:"#e2e8f0",fontWeight:600}}>{p.name||"-"}</span>
+          {p.id&&<span style={{color:"#475569",marginLeft:4,fontSize:9}}>({p.id})</span>}
+        </div>))}
+      </div>);
+    }
+    if(c==="Tenure"||c==="Revised Tenure"){
+      return(<span style={{padding:"2px 8px",borderRadius:5,fontSize:11,fontWeight:700,
+        background:(tCol[val]||"#64748b")+"22",color:tCol[val]||"#64748b"}}>{val||"-"}</span>);
+    }
+    if(c==="Portfolio Lead"){
+      return(<select value={row["_plId"]||""} onChange={e=>setField(id,"Portfolio Lead",e.target.value)} style={{...INP,minWidth:140}}>
+        <option value="">-</option>
+        {plLeads.filter(l=>l.id||l.name).map(l=>(
+          <option key={l.id||l.name} value={l.id}>{l.name?l.name+" ("+l.id+")":l.id}</option>
+        ))}
+      </select>);
+    }
+    if(c==="Exempted Category"){
+      return(<select value={val} onChange={e=>setField(id,c,e.target.value)} style={{...INP,minWidth:140}}>
+        <option value="">-</option>
+        {exemptCats.map(cat=>(<option key={cat} value={cat}>{cat}</option>))}
+      </select>);
+    }
+    if(c==="Exempted Till"){
+      return(<input value={formatExemptedTill(val)} onChange={e=>setField(id,c,e.target.value)}
+        placeholder="MM/YY" maxLength={10} style={{...INP,minWidth:72,width:80}}/>);
+    }
+    if(c==="Email Approval"){
+      return(<select value={val} onChange={e=>setField(id,c,e.target.value)} style={{...INP,minWidth:80}}>
+        <option value="">-</option>
+        <option value="Y">Y</option>
+        <option value="N">N</option>
+        <option value="Identified">Identified</option>
+      </select>);
+    }
+    if(c==="Comments"){
+      return(<input value={val} onChange={e=>setField(id,c,e.target.value)}
+        placeholder="Add remarks..." style={{...INP,minWidth:160,width:180}}/>);
+    }
+    return <span style={{color:"#cbd5e1"}}>{val||"-"}</span>;
+  };
+
   return(<div style={{position:"fixed",inset:0,zIndex:1000,background:"rgba(0,0,0,0.75)",display:"flex",alignItems:"center",justifyContent:"center",padding:24}} onClick={onClose}>
-    <div style={{background:"#0f172a",border:"1px solid #334155",borderRadius:14,width:"100%",maxWidth:1100,maxHeight:"85vh",display:"flex",flexDirection:"column",overflow:"hidden"}} onClick={e=>e.stopPropagation()}>
-      <div style={{padding:"18px 24px",borderBottom:"1px solid #1e293b",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
-        <div><div style={{color:"#f8fafc",fontWeight:800,fontSize:16}}>{title}</div><div style={{color:"#64748b",fontSize:12,marginTop:2}}>{associates.length} associates</div></div>
-        <div style={{display:"flex",alignItems:"center",gap:12}}>
-          <div style={{position:"relative"}}><span style={{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",color:"#475569"}}><Icon name="search" size={13}/></span><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search..." style={{paddingLeft:30,paddingRight:10,height:34,width:200,background:"#1e293b",border:"1px solid #334155",borderRadius:7,color:"#e2e8f0",fontSize:12,outline:"none"}}/></div>
+    <div style={{background:"#0f172a",border:"1px solid #334155",borderRadius:14,width:"100%",maxWidth:1350,maxHeight:"90vh",display:"flex",flexDirection:"column",overflow:"hidden"}} onClick={e=>e.stopPropagation()}>
+      <div style={{padding:"16px 24px",borderBottom:"1px solid #1e293b",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
+        <div>
+          <div style={{color:"#f8fafc",fontWeight:800,fontSize:16}}>{title}</div>
+          <div style={{color:"#64748b",fontSize:12,marginTop:2}}>{uniqueRows.length+" unique associates ("+associates.length+" total rows) — editable fields shown in blue"}</div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div style={{position:"relative"}}>
+            <span style={{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",color:"#475569"}}><Icon name="search" size={13}/></span>
+            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search..." style={{paddingLeft:30,paddingRight:10,height:34,width:180,background:"#1e293b",border:"1px solid #334155",borderRadius:7,color:"#e2e8f0",fontSize:12,outline:"none"}}/>
+          </div>
+          {Object.keys(dirty).length>0&&(
+            <button onClick={handleSave} disabled={saving} style={{padding:"7px 18px",borderRadius:7,background:saving?"#0369a1":"#0ea5e9",color:"#fff",fontWeight:700,fontSize:12,border:"none",cursor:saving?"wait":"pointer"}}>
+              {saving?"Saving...":"Save ("+Object.keys(dirty).length+" changed)"}
+            </button>
+          )}
+          {saved&&<span style={{color:saveError?"#fb923c":"#4ade80",fontSize:12,fontWeight:700}}>{saveError||"\u2713 Saved to SharePoint"}</span>}
           <button onClick={onClose} style={{width:32,height:32,borderRadius:8,border:"1px solid #334155",background:"#1e293b",color:"#94a3b8",cursor:"pointer",fontSize:16,display:"flex",alignItems:"center",justifyContent:"center"}}>x</button>
         </div>
       </div>
-      <div style={{overflowY:"auto",flex:1}}>
-        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-          <thead style={{position:"sticky",top:0,zIndex:1}}><tr style={{background:"#1e293b"}}>{cols.map(c=><th key={c} style={{padding:"10px 12px",textAlign:"left",color:"#94a3b8",fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:"0.06em",borderBottom:"1px solid #334155",whiteSpace:"nowrap"}}>{c}</th>)}</tr></thead>
-          <tbody>{filtered.map((row,i)=>(<tr key={i} style={{background:i%2===0?"#0a1628":"#0f172a",borderBottom:"1px solid #1e293b"}}>{cols.map(c=>(<td key={c} style={{padding:"9px 12px",color:"#cbd5e1",whiteSpace:"nowrap",maxWidth:180,overflow:"hidden",textOverflow:"ellipsis"}}>{(c==="Tenure"||c==="Revised Tenure")?<span style={{padding:"2px 8px",borderRadius:5,fontSize:11,fontWeight:700,background:({"<8 months":"#38bdf822","8 to 10 months":"#a78bfa22","10 to 12 months":"#fb923c22","> 12 months":"#f8717122"}[row[c]]||"#64748b22"),color:({"<8 months":"#38bdf8","8 to 10 months":"#a78bfa","10 to 12 months":"#fb923c","> 12 months":"#f87171"}[row[c]]||"#64748b")}}>{row[c]||"—"}</span>:c==="Email Approval"?<span style={{padding:"2px 8px",borderRadius:5,fontSize:11,fontWeight:700,background:row[c]==="Y"?"#16a34a22":row[c]==="N"?"#dc262622":"#1e293b",color:row[c]==="Y"?"#4ade80":row[c]==="N"?"#f87171":"#64748b"}}>{row[c]||"—"}</span>:(row[c]||"—")}</td>))}</tr>))}{!filtered.length&&<tr><td colSpan={cols.length} style={{padding:24,textAlign:"center",color:"#475569"}}>No matching records</td></tr>}</tbody>
+      <div style={{overflowY:"auto",overflowX:"auto",flex:1}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:1400}}>
+          <thead style={{position:"sticky",top:0,zIndex:1}}>
+            <tr style={{background:"#1e293b"}}>
+              {COLS.map(c=>(<th key={c} style={{padding:"9px 10px",textAlign:"left",
+                color:EDITABLE.includes(c)?"#38bdf8":c==="Projects"?"#a78bfa":"#94a3b8",
+                fontWeight:700,fontSize:10,textTransform:"uppercase",letterSpacing:"0.06em",
+                borderBottom:"1px solid #334155",whiteSpace:"nowrap"}}>
+                {c}{EDITABLE.includes(c)&&<span style={{color:"#38bdf855",marginLeft:4,fontSize:9}}>&#9998;</span>}
+              </th>))}
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((row,i)=>{
+              const id=String(row["Associate ID"]??"").trim();
+              const isDirty=dirty[id];
+              return(<tr key={id||i} style={{background:isDirty?"#0f1e2e":i%2===0?"#0a1628":"#0f172a",
+                borderBottom:"1px solid #1e293b",outline:isDirty?"1px solid #38bdf822":"none"}}>
+                {COLS.map(c=>(<td key={c} style={{padding:"7px 8px",
+                  whiteSpace:c==="Projects"?"normal":"nowrap",
+                  maxWidth:c==="Projects"?260:EDITABLE.includes(c)?160:180,
+                  overflow:"hidden",textOverflow:c==="Projects"?"unset":"ellipsis",
+                  verticalAlign:"top"}}>
+                  {renderCell(row,c)}
+                </td>))}
+              </tr>);
+            })}
+            {!filtered.length&&<tr><td colSpan={COLS.length} style={{padding:24,textAlign:"center",color:"#475569"}}>No matching records</td></tr>}
+          </tbody>
         </table>
       </div>
+      {Object.keys(dirty).length>0&&(
+        <div style={{padding:"12px 24px",borderTop:"1px solid #1e293b",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0,background:"#080f1f"}}>
+          <span style={{color:"#64748b",fontSize:12}}>{Object.keys(dirty).length+" associate(s) with unsaved changes"}</span>
+          <div style={{display:"flex",gap:10}}>
+            <button onClick={()=>{setLocalExtra(lsExtraLoad());setDirty({});setSaved(false);}} style={{padding:"7px 16px",borderRadius:7,background:"#1e293b",color:"#94a3b8",fontWeight:700,fontSize:12,border:"1px solid #334155",cursor:"pointer"}}>Discard</button>
+            <button onClick={handleSave} disabled={saving} style={{padding:"7px 18px",borderRadius:7,background:saving?"#0369a1":"#0ea5e9",color:"#fff",fontWeight:700,fontSize:12,border:"none",cursor:saving?"wait":"pointer"}}>{saving?"Saving...":"Save Changes"}</button>
+          </div>
+        </div>
+      )}
     </div>
   </div>);
 }
+
+
 
 
 // ── Tenure Status Drilldown Modal ────────────────────────────────────────────
@@ -461,88 +669,251 @@ function AtRiskDrilldown({title,associates,onClose}){
   const [assocDialog,setAssocDialog]=useState(null);
   const fteSum=rows=>new Set(rows.map(r=>String(r["Associate ID"]??"").trim()).filter(Boolean)).size;
   const extra=lsExtraLoad();
-  const plLeads=lsPortfolioLoad();
-  const plMap=Object.fromEntries(plLeads.filter(l=>l.id).map(l=>[l.id,l.name?l.name+" ("+l.id+")":l.id]));
-  const enriched=associates.map(r=>{
+  const exemptCats=lsExemptCatLoad();
+  const accent=title.includes("> 12")?"#f87171":"#fb923c";
+
+  // Enrich with extra cols
+  const enriched=useMemo(()=>associates.map(r=>{
     const id=String(r["Associate ID"]??"").trim();
     const ex=extra[id]||{};
-    const et=ex["Exempted Till"]||"";
-    const plId=ex["Portfolio Lead"]||"";
-    return{...r,"Portfolio Lead":plId?(plMap[plId]||plId):"","Exempted Category":ex["Exempted Category"]||"","Exempted Till":et,"Revised Tenure":et?deriveRevisedTenure(et,r.Tenure):(ex["Revised Tenure"]||""),"Email Approval":ex["Email Approval"]||""};
-  });
-  const onsiteVals=[...new Set(enriched.map(r=>r["Is Onsite"]||"Unknown"))].sort();
-  const rowGroups=useMemo(()=>{
-    if(viewBy==="practice"){
-      const g={};enriched.forEach(r=>{const k=r["Practice Area"]||"Unspecified";if(!g[k])g[k]={label:k,rows:[]};g[k].rows.push(r);});
-      return Object.values(g).sort((a,b)=>b.rows.length-a.rows.length);
-    }else{
-      const g={};enriched.forEach(r=>{const pid=r["Project Id"]||"";const pn=r["Project Name"]||"Unknown";const k=pid+"||"+pn;if(!g[k])g[k]={id:pid,name:pn,label:pn,rows:[]};g[k].rows.push(r);});
-      return Object.values(g).sort((a,b)=>b.rows.length-a.rows.length);
-    }
-  },[enriched,viewBy]);
-  const totalByOnsite=onsiteVals.reduce((acc,ov)=>{acc[ov]=fteSum(enriched.filter(r=>(r["Is Onsite"]||"Unknown")===ov));return acc;},{});
-  const accent=title.includes("> 12")?"#f87171":"#fb923c";
+    return{...r,"Exempted Category":ex["Exempted Category"]||""};
+  }),[associates,extra]);
+
+  // All exemption categories present in this dataset
+  const allCats=useMemo(()=>{
+    const raw=[...exemptCats,...enriched.map(r=>r["Exempted Category"]).filter(Boolean)];
+    const m={};raw.forEach(c=>{const k=c.toLowerCase();if(!m[k])m[k]=c;});
+    return Object.values(m).sort();
+  },[enriched,exemptCats]);
+
+  // ── Practice Area tab ────────────────────────────────────────────────────
+  // Rows: Practice Area (merged) × FTE_CON; Columns: Exempted Category + No Category + Total
+  const practiceGroups=useMemo(()=>{
+    const g={};
+    enriched.forEach(r=>{
+      const pa=r["Practice Area"]||"Unspecified";
+      const fte=r["FTE_CON"]||"FTE";
+      if(!g[pa])g[pa]={label:pa,fteRows:{}};
+      if(!g[pa].fteRows[fte])g[pa].fteRows[fte]=[];
+      g[pa].fteRows[fte].push(r);
+    });
+    return Object.values(g).sort((a,b)=>{
+      const aTotal=fteSum(Object.values(a.fteRows).flat());
+      const bTotal=fteSum(Object.values(b.fteRows).flat());
+      return bTotal-aTotal;
+    });
+  },[enriched]);
+
+  // ── Project Billability tab ──────────────────────────────────────────────
+  // Rows: Project Billability (merged) × FTE_CON; Columns: FTE_CON count + Total
+  const billGroups=useMemo(()=>{
+    const g={};
+    enriched.forEach(r=>{
+      const bill=r["Project Billability"]||"Unknown";
+      const fte=r["FTE_CON"]||"FTE";
+      if(!g[bill])g[bill]={label:bill,fteRows:{}};
+      if(!g[bill].fteRows[fte])g[bill].fteRows[fte]=[];
+      g[bill].fteRows[fte].push(r);
+    });
+    return Object.values(g).sort((a,b)=>{
+      const aTotal=fteSum(Object.values(a.fteRows).flat());
+      const bTotal=fteSum(Object.values(b.fteRows).flat());
+      return bTotal-aTotal;
+    });
+  },[enriched]);
+
+  const fteCons=[...new Set(enriched.map(r=>r["FTE_CON"]||"FTE"))].sort();
+  const btnStyle=(col)=>({background:col+"22",border:"1px solid "+col+"44",borderRadius:6,color:col,fontWeight:700,fontSize:12,cursor:"pointer",padding:"3px 10px",minWidth:32});
+  const totalBtnStyle={background:"#f8fafc22",border:"1px solid #33415566",borderRadius:6,color:"#f8fafc",fontWeight:800,fontSize:12,cursor:"pointer",padding:"3px 10px",minWidth:32};
+  const thS=(col)=>({padding:"8px 10px",textAlign:"center",color:col||"#94a3b8",fontWeight:700,fontSize:10,textTransform:"uppercase",letterSpacing:"0.05em",borderBottom:"1px solid #334155",whiteSpace:"nowrap"});
+  const catColors=["#4ade80","#f87171","#fb923c","#38bdf8","#a78bfa","#fbbf24","#e879f9","#34d399","#f472b6"];
+
   return(
     <div style={{position:"fixed",inset:0,zIndex:1100,background:"rgba(0,0,0,0.8)",display:"flex",alignItems:"center",justifyContent:"center",padding:24}} onClick={onClose}>
-      <div style={{background:"#0f172a",border:"1px solid #334155",borderRadius:14,width:"100%",maxWidth:1200,maxHeight:"90vh",display:"flex",flexDirection:"column",overflow:"hidden"}} onClick={e=>e.stopPropagation()}>
-        <div style={{padding:"18px 24px",borderBottom:"1px solid #1e293b",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
+      <div style={{background:"#0f172a",border:"1px solid #334155",borderRadius:14,width:"100%",maxWidth:1300,maxHeight:"92vh",display:"flex",flexDirection:"column",overflow:"hidden"}} onClick={e=>e.stopPropagation()}>
+
+        {/* Header */}
+        <div style={{padding:"16px 24px",borderBottom:"1px solid #1e293b",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
           <div>
             <div style={{color:accent,fontWeight:800,fontSize:17}}>{title}</div>
-            <div style={{color:"#64748b",fontSize:12,marginTop:2}}>{"FTE Count: "+fteSum(enriched)+" (Headcount: "+associates.length+") - click any count to view details"}</div>
+            <div style={{color:"#64748b",fontSize:12,marginTop:2}}>{"Total: "+fteSum(enriched)+" associates — click any count to view details"}</div>
           </div>
           <button onClick={onClose} style={{width:32,height:32,borderRadius:8,border:"1px solid #334155",background:"#1e293b",color:"#94a3b8",cursor:"pointer",fontSize:18,display:"flex",alignItems:"center",justifyContent:"center"}}>x</button>
         </div>
-        <div style={{padding:"14px 24px",borderBottom:"1px solid #1e293b",display:"flex",gap:8,flexShrink:0}}>
-          <span style={{color:"#64748b",fontSize:12,alignSelf:"center",marginRight:6}}>Group by:</span>
-          {[["practice","Practice Area"],["project","Project Name"]].map(([val,label])=>(
-            <button key={val} onClick={()=>setViewBy(val)} style={{padding:"6px 16px",borderRadius:7,fontSize:12,fontWeight:700,cursor:"pointer",background:viewBy===val?accent+"22":"#1e293b",border:"1px solid "+(viewBy===val?accent:"#334155"),color:viewBy===val?accent:"#64748b"}}>
+
+        {/* Tabs */}
+        <div style={{padding:"12px 24px 0",borderBottom:"1px solid #1e293b",display:"flex",gap:8,flexShrink:0}}>
+          {[["practice","Practice Area"],["billability","Project Billability"]].map(([val,label])=>(
+            <button key={val} onClick={()=>setViewBy(val)} style={{padding:"8px 20px",borderRadius:"7px 7px 0 0",fontSize:12,fontWeight:700,cursor:"pointer",
+              background:viewBy===val?accent+"22":"transparent",
+              border:"1px solid "+(viewBy===val?accent:"#334155"),
+              borderBottom:viewBy===val?"1px solid transparent":"1px solid #334155",
+              color:viewBy===val?accent:"#64748b",marginBottom:-1}}>
               {label}
             </button>
           ))}
         </div>
+
+        {/* Table */}
         <div style={{overflowY:"auto",flex:1}}>
-          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-            <thead style={{position:"sticky",top:0,zIndex:1}}>
-              <tr style={{background:"#1e293b"}}>
-                <th style={{padding:"10px 14px",textAlign:"left",color:"#94a3b8",fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:"0.06em",borderBottom:"1px solid #334155",minWidth:200}}>{viewBy==="practice"?"Practice Area":"Project"}</th>
-                {onsiteVals.map(ov=>(<th key={ov} style={{padding:"10px 14px",textAlign:"center",color:accent,fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:"0.06em",borderBottom:"1px solid #334155",minWidth:90}}>{ov}</th>))}
-                <th style={{padding:"10px 14px",textAlign:"center",color:"#f8fafc",fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:"0.06em",borderBottom:"1px solid #334155",minWidth:80}}>Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rowGroups.map((group,i)=>(
-                <tr key={i} style={{background:i%2===0?"#0a1628":"#0f172a",borderBottom:"1px solid #1e293b"}}>
-                  <td style={{padding:"9px 14px",color:"#cbd5e1",fontWeight:600}}>
-                    {viewBy==="project"?(<div><div style={{color:"#f8fafc",fontSize:12,fontWeight:700}}>{group.name}</div>{group.id&&<div style={{color:"#475569",fontSize:10,marginTop:1}}>{"ID: "+group.id}</div>}</div>):group.label}
-                  </td>
-                  {onsiteVals.map(ov=>{
-                    const subset=group.rows.filter(r=>(r["Is Onsite"]||"Unknown")===ov);
-                    return(<td key={ov} style={{padding:"9px 14px",textAlign:"center"}}>
-                      {subset.length>0?(<button onClick={()=>setAssocDialog({title:group.label+" - "+ov,associates:subset})} style={{background:accent+"22",border:"1px solid "+accent+"44",borderRadius:6,color:accent,fontWeight:700,fontSize:12,cursor:"pointer",padding:"3px 12px",minWidth:36}}>{fteSum(subset)}</button>):<span style={{color:"#334155"}}>-</span>}
+
+          {/* ── Practice Area tab ── */}
+          {viewBy==="practice"&&(
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+              <thead style={{position:"sticky",top:0,zIndex:2}}>
+                <tr style={{background:"#1e293b"}}>
+                  <th style={{...thS("#94a3b8"),textAlign:"left",minWidth:160}}>Practice Area</th>
+                  <th style={{...thS("#94a3b8"),textAlign:"left",minWidth:60}}>FTE Type</th>
+                  {allCats.map((cat,ci)=>(
+                    <th key={cat} style={thS(catColors[ci%catColors.length])}>{cat||"No Category"}</th>
+                  ))}
+                  <th style={thS("#64748b")}>No Category</th>
+                  <th style={thS("#f8fafc")}>Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {practiceGroups.map((group,gi)=>{
+                  const fteKeys=Object.keys(group.fteRows).sort();
+                  const allGroupRows=fteKeys.flatMap(f=>group.fteRows[f]);
+                  return fteKeys.map((fte,fi)=>{
+                    const rows=group.fteRows[fte];
+                    const isFirst=fi===0;
+                    const rowSpan=fteKeys.length;
+                    const bg=gi%2===0?"#0a1628":"#0f172a";
+                    return(
+                      <tr key={group.label+fte} style={{background:bg,borderBottom:"1px solid #1e293b"}}>
+                        {isFirst&&(
+                          <td rowSpan={rowSpan} style={{padding:"9px 12px",color:"#e2e8f0",fontWeight:700,fontSize:12,verticalAlign:"middle",borderRight:"1px solid #1e293b",borderBottom:fi===fteKeys.length-1?"1px solid #334155":"none"}}>
+                            {group.label}
+                          </td>
+                        )}
+                        <td style={{padding:"7px 10px",color:"#94a3b8",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>{fte}</td>
+                        {allCats.map((cat,ci)=>{
+                          const subset=rows.filter(r=>r["Exempted Category"]===cat);
+                          const cnt=fteSum(subset);
+                          return(<td key={cat} style={{padding:"7px 10px",textAlign:"center"}}>
+                            {cnt>0?<button onClick={()=>setAssocDialog({title:group.label+" / "+fte+" / "+cat,associates:subset})} style={btnStyle(catColors[ci%catColors.length])}>{cnt}</button>:<span style={{color:"#334155"}}>-</span>}
+                          </td>);
+                        })}
+                        {(()=>{
+                          const nocat=rows.filter(r=>!r["Exempted Category"]);
+                          const cnt=fteSum(nocat);
+                          return(<td style={{padding:"7px 10px",textAlign:"center"}}>
+                            {cnt>0?<button onClick={()=>setAssocDialog({title:group.label+" / "+fte+" / No Category",associates:nocat})} style={btnStyle("#64748b")}>{cnt}</button>:<span style={{color:"#334155"}}>-</span>}
+                          </td>);
+                        })()}
+                        <td style={{padding:"7px 10px",textAlign:"center"}}>
+                          <button onClick={()=>setAssocDialog({title:group.label+" / "+fte,associates:rows})} style={totalBtnStyle}>{fteSum(rows)}</button>
+                        </td>
+                      </tr>
+                    );
+                  });
+                })}
+                {/* Totals row */}
+                <tr style={{background:"#1e293b",borderTop:"2px solid #334155"}}>
+                  <td colSpan={2} style={{padding:"9px 12px",color:"#f8fafc",fontWeight:800,fontSize:12}}>TOTAL</td>
+                  {allCats.map((cat,ci)=>{
+                    const subset=enriched.filter(r=>r["Exempted Category"]===cat);
+                    const cnt=fteSum(subset);
+                    return(<td key={cat} style={{padding:"9px 10px",textAlign:"center"}}>
+                      <button onClick={()=>setAssocDialog({title:"All / "+cat,associates:subset})} style={btnStyle(catColors[ci%catColors.length])}>{cnt}</button>
                     </td>);
                   })}
-                  <td style={{padding:"9px 14px",textAlign:"center"}}>
-                    <button onClick={()=>setAssocDialog({title:group.label+" - All",associates:group.rows})} style={{background:"#f8fafc22",border:"1px solid #33415566",borderRadius:6,color:"#f8fafc",fontWeight:800,fontSize:12,cursor:"pointer",padding:"3px 12px",minWidth:36}}>{fteSum(group.rows)}</button>
+                  {(()=>{
+                    const nocat=enriched.filter(r=>!r["Exempted Category"]);
+                    return(<td style={{padding:"9px 10px",textAlign:"center"}}>
+                      <button onClick={()=>setAssocDialog({title:"All / No Category",associates:nocat})} style={btnStyle("#64748b")}>{fteSum(nocat)}</button>
+                    </td>);
+                  })()}
+                  <td style={{padding:"9px 10px",textAlign:"center"}}>
+                    <button onClick={()=>setAssocDialog({title:"All Associates",associates:enriched})} style={totalBtnStyle}>{fteSum(enriched)}</button>
                   </td>
                 </tr>
-              ))}
-              <tr style={{background:"#1e293b",borderTop:"2px solid #334155"}}>
-                <td style={{padding:"10px 14px",color:"#f8fafc",fontWeight:800,fontSize:12}}>TOTAL</td>
-                {onsiteVals.map(ov=>(<td key={ov} style={{padding:"10px 14px",textAlign:"center"}}>
-                  <button onClick={()=>setAssocDialog({title:"All - "+ov,associates:enriched.filter(r=>(r["Is Onsite"]||"Unknown")===ov)})} style={{background:accent+"22",border:"1px solid "+accent+"44",borderRadius:6,color:accent,fontWeight:700,fontSize:12,cursor:"pointer",padding:"3px 12px",minWidth:36}}>{totalByOnsite[ov]||0}</button>
-                </td>))}
-                <td style={{padding:"10px 14px",textAlign:"center"}}>
-                  <button onClick={()=>setAssocDialog({title:"All Associates",associates:enriched})} style={{background:"#f8fafc22",border:"1px solid #33415566",borderRadius:6,color:"#f8fafc",fontWeight:800,fontSize:13,cursor:"pointer",padding:"3px 12px",minWidth:36}}>{fteSum(enriched)}</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+              </tbody>
+            </table>
+          )}
+
+          {/* ── Project Billability tab ── */}
+          {viewBy==="billability"&&(
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+              <thead style={{position:"sticky",top:0,zIndex:2}}>
+                <tr style={{background:"#1e293b"}}>
+                  <th style={{...thS("#94a3b8"),textAlign:"left",minWidth:140}}>Project Billability</th>
+                  <th style={{...thS("#94a3b8"),textAlign:"left",minWidth:60}}>FTE Type</th>
+                  {allCats.map((cat,ci)=>(
+                    <th key={cat} style={thS(catColors[ci%catColors.length])}>{cat||"No Category"}</th>
+                  ))}
+                  <th style={thS("#64748b")}>No Category</th>
+                  <th style={thS("#f8fafc")}>Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {billGroups.map((group,gi)=>{
+                  const fteKeys=Object.keys(group.fteRows).sort();
+                  const bg=gi%2===0?"#0a1628":"#0f172a";
+                  return fteKeys.map((fte,fi)=>{
+                    const rows=group.fteRows[fte];
+                    const isFirst=fi===0;
+                    const rowSpan=fteKeys.length;
+                    return(
+                      <tr key={group.label+fte} style={{background:bg,borderBottom:"1px solid #1e293b"}}>
+                        {isFirst&&(
+                          <td rowSpan={rowSpan} style={{padding:"9px 12px",color:"#e2e8f0",fontWeight:700,fontSize:12,verticalAlign:"middle",borderRight:"1px solid #1e293b"}}>
+                            {group.label}
+                          </td>
+                        )}
+                        <td style={{padding:"7px 10px",color:"#94a3b8",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>{fte}</td>
+                        {allCats.map((cat,ci)=>{
+                          const subset=rows.filter(r=>r["Exempted Category"]===cat);
+                          const cnt=fteSum(subset);
+                          return(<td key={cat} style={{padding:"7px 10px",textAlign:"center"}}>
+                            {cnt>0?<button onClick={()=>setAssocDialog({title:group.label+" / "+fte+" / "+cat,associates:subset})} style={btnStyle(catColors[ci%catColors.length])}>{cnt}</button>:<span style={{color:"#334155"}}>-</span>}
+                          </td>);
+                        })}
+                        {(()=>{
+                          const nocat=rows.filter(r=>!r["Exempted Category"]);
+                          const cnt=fteSum(nocat);
+                          return(<td style={{padding:"7px 10px",textAlign:"center"}}>
+                            {cnt>0?<button onClick={()=>setAssocDialog({title:group.label+" / "+fte+" / No Category",associates:nocat})} style={btnStyle("#64748b")}>{cnt}</button>:<span style={{color:"#334155"}}>-</span>}
+                          </td>);
+                        })()}
+                        <td style={{padding:"7px 10px",textAlign:"center"}}>
+                          <button onClick={()=>setAssocDialog({title:group.label+" / "+fte,associates:rows})} style={totalBtnStyle}>{fteSum(rows)}</button>
+                        </td>
+                      </tr>
+                    );
+                  });
+                })}
+                <tr style={{background:"#1e293b",borderTop:"2px solid #334155"}}>
+                  <td colSpan={2} style={{padding:"9px 12px",color:"#f8fafc",fontWeight:800,fontSize:12}}>TOTAL</td>
+                  {allCats.map((cat,ci)=>{
+                    const subset=enriched.filter(r=>r["Exempted Category"]===cat);
+                    const cnt=fteSum(subset);
+                    return(<td key={cat} style={{padding:"9px 10px",textAlign:"center"}}>
+                      <button onClick={()=>setAssocDialog({title:"All / "+cat,associates:subset})} style={btnStyle(catColors[ci%catColors.length])}>{cnt}</button>
+                    </td>);
+                  })}
+                  {(()=>{
+                    const nocat=enriched.filter(r=>!r["Exempted Category"]);
+                    return(<td style={{padding:"9px 10px",textAlign:"center"}}>
+                      <button onClick={()=>setAssocDialog({title:"All / No Category",associates:nocat})} style={btnStyle("#64748b")}>{fteSum(nocat)}</button>
+                    </td>);
+                  })()}
+                  <td style={{padding:"9px 10px",textAlign:"center"}}>
+                    <button onClick={()=>setAssocDialog({title:"All Associates",associates:enriched})} style={totalBtnStyle}>{fteSum(enriched)}</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          )}
+
         </div>
       </div>
       {assocDialog&&<AssociateDialog title={assocDialog.title} associates={assocDialog.associates} onClose={()=>setAssocDialog(null)}/>}
     </div>
   );
 }
+
 
 function TenureStatusDrilldown({exemptCategory, associates, onClose}) {
   const [viewBy, setViewBy] = useState("practice");
@@ -982,36 +1353,33 @@ function Dashboard({baseData}){
     const tenTo12rows=baseData.filter(r=>r.Tenure==="10 to 12 months");
     return{total,headcount,tenureSegments:ts,billabilityCounts:bc,
       over12:over12rows,over12Count:uniqueCount(over12rows),
-      tenTo12:tenTo12rows,tenTo12Count:uniqueCount(tenTo12rows)};
+      tenTo12:tenTo12rows,tenTo12Count:uniqueCount(tenTo12rows),
+      eightTo10:baseData.filter(r=>r.Tenure==="8 to 10 months"),
+      eightTo10Count:uniqueCount(baseData.filter(r=>r.Tenure==="8 to 10 months"))};
   },[baseData]);
   if(!baseData.length)return(<div style={{padding:"80px 36px",textAlign:"center"}}><div style={{color:"#334155",fontSize:48,marginBottom:16}}><Icon name="bar" size={56}/></div><div style={{color:"#475569",fontSize:18,fontWeight:600}}>No data to display</div><div style={{color:"#334155",fontSize:14,marginTop:8}}>Data loads automatically — or go to Upload to refresh</div></div>);
   return(<div style={{padding:"32px 36px"}}>
     {dialog&&<AssociateDialog title={dialog.title} associates={dialog.associates} onClose={()=>setDialog(null)}/>}{atRiskDialog&&<AtRiskDrilldown title={atRiskDialog.title} associates={atRiskDialog.associates} onClose={()=>setAtRiskDialog(null)}/>}
     <h2 style={{color:"#f8fafc",fontSize:22,fontWeight:800,marginBottom:6}}>Dashboard</h2>
     <p style={{color:"#64748b",fontSize:14,marginBottom:28}}>Overview of tenure associates</p>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:16,marginBottom:28}}>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:16,marginBottom:16}}>
       <StatCard label="Total Associates (unique)" value={stats.total} sub={"Rows: "+stats.headcount} accent="#38bdf8" icon={<Icon name="users" size={20}/>}/>
       <StatCard label="FTE Associates" value={(()=>{const ids=new Set(baseData.filter(r=>r.FTE_CON==="FTE").map(r=>String(r["Associate ID"]??"").trim()).filter(Boolean));return ids.size;})()}  sub={"Rows: "+baseData.filter(r=>r.FTE_CON==="FTE").length} accent="#4ade80" icon={<Icon name="check" size={20}/>}/>
       <StatCard label="Contractors" value={(()=>{const ids=new Set(baseData.filter(r=>r.FTE_CON==="Cont").map(r=>String(r["Associate ID"]??"").trim()).filter(Boolean));return ids.size;})()}  sub={"Rows: "+baseData.filter(r=>r.FTE_CON==="Cont").length} accent="#fb923c" icon={<Icon name="clock" size={20}/>}/>
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:16,marginBottom:28}}>
       <div onClick={()=>stats.over12.length&&setAtRiskDialog({title:"At Risk - > 12 Months",associates:stats.over12})} style={{cursor:stats.over12.length?"pointer":"default"}}><StatCard label="At Risk > 12 months" value={stats.over12Count} sub={stats.over12.length?"Rows: "+stats.over12.length+" — Click to view":"None"} accent="#f87171" icon={<Icon name="alert" size={20}/>}/></div>
       <div onClick={()=>stats.tenTo12.length&&setAtRiskDialog({title:"At Risk - 10 to 12 Months",associates:stats.tenTo12})} style={{cursor:stats.tenTo12.length?"pointer":"default"}}><StatCard label="At Risk 10-12 months" value={stats.tenTo12Count} sub={stats.tenTo12.length?"Rows: "+stats.tenTo12.length+" — Click to view":"None"} accent="#fb923c" icon={<Icon name="alert" size={20}/>}/></div>
+      <div onClick={()=>stats.eightTo10.length&&setAtRiskDialog({title:"At Risk - 8 to 10 Months",associates:stats.eightTo10})} style={{cursor:stats.eightTo10.length?"pointer":"default"}}><StatCard label="At Risk 8-10 months" value={stats.eightTo10Count} sub={stats.eightTo10.length?"Rows: "+stats.eightTo10.length+" — Click to view":"None"} accent="#a78bfa" icon={<Icon name="alert" size={20}/>}/></div>
     </div>
-    <div style={{display:"grid",gridTemplateColumns:"320px 1fr",gap:20,marginBottom:20}}>
-      <div style={{background:"#1e293b",border:"1px solid #334155",borderRadius:12,padding:"20px 22px"}}>
-        <div style={{color:"#94a3b8",fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:16}}>Tenure Distribution</div>
-        <div style={{display:"flex",justifyContent:"center",marginBottom:16}}><DonutChart segments={stats.tenureSegments} size={130}/></div>
-        <div style={{display:"flex",flexDirection:"column",gap:8}}>{stats.tenureSegments.map(s=>(<div key={s.label} style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}><div style={{display:"flex",alignItems:"center",gap:7}}><div style={{width:8,height:8,borderRadius:2,background:s.color,flexShrink:0}}/><span style={{color:"#cbd5e1",fontSize:12}}>{s.label}</span></div><span style={{color:"#f8fafc",fontSize:12,fontWeight:700}}>{s.value}</span></div>))}</div>
-      </div>
-      <div style={{background:"#1e293b",border:"1px solid #334155",borderRadius:12,padding:"20px 22px"}}>
-        <div style={{color:"#94a3b8",fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:16}}>Billability Breakdown</div>
-        {Object.entries(stats.billabilityCounts).map(([k,v],i)=>{const colors=["#4ade80","#fb923c","#38bdf8","#f87171","#a78bfa"];const color=colors[i%colors.length];const pct=Math.round(v/stats.total*100);return(<div key={k} style={{marginBottom:14}}><div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}><span style={{color:"#cbd5e1",fontSize:12}}>{k}</span><span style={{color,fontSize:12,fontWeight:700}}>{v} ({pct}%)</span></div><div style={{height:6,borderRadius:3,background:"#0f172a",overflow:"hidden"}}><div style={{height:"100%",width:`${pct}%`,background:color,borderRadius:3,transition:"width 0.5s"}}/></div></div>);})}
-      </div>
-    </div>
+    
     <div style={{marginTop:20}}><TenureStatusPanel baseData={baseData}/></div>
   </div>);
 }
 
-const ALL_COLUMNS=[...ESA_COLUMNS,"FTE_CON","Month","Tenure","Portfolio Lead","Exempted Category","Exempted Till","Revised Tenure","Email Approval"];
+const ALL_COLUMNS=[...ESA_COLUMNS,"FTE_CON","Month","Tenure","Portfolio Lead","Exempted Category","Exempted Till","Revised Tenure","Email Approval","Comments"];
+const HIDDEN_COLS=["Allocation Start Date"];
+const VISIBLE_COLUMNS=ALL_COLUMNS.filter(c=>!HIDDEN_COLS.includes(c));
 // ── Master Data storage helpers ─────────────────────────────────────────────
 const DEFAULT_EXEMPT_CATS = ["Exempted","Work in Progress","Release / Release in progress","Short Contract","To be replaced","Exclude","NGTS"];
 function lsExemptCatLoad(){
@@ -1430,7 +1798,24 @@ function deriveRevisedTenure(exemptedTill,originalTenure){
   const dm=(now.getFullYear()-exemptDate.getFullYear())*12+(now.getMonth()-exemptDate.getMonth());
   if(dm<8)return"<8 months";if(dm<10)return"8 to 10 months";if(dm<=12)return"10 to 12 months";return"> 12 months";
 }
-const EXTRA_COLS=["Portfolio Lead","Exempted Category","Exempted Till","Revised Tenure","Email Approval"];
+function formatExemptedTill(val){
+  if(!val)return"";
+  const v=String(val).trim();
+  // YYYY-MM-DD or YYYY-MM -> M/YY
+  const iso=v.match(/^(\d{4})-(\d{2})/);
+  if(iso)return parseInt(iso[2],10)+"/"+iso[1].slice(2);
+  // Already MM/YY or M/YY -> normalise (strip leading zero from month)
+  const mmy=v.match(/^(\d{1,2})\/(\d{2})$/);
+  if(mmy)return parseInt(mmy[1],10)+"/"+mmy[2];
+  // Return as-is (text notes like "Intl Store support")
+  return v;
+}
+function toMMYYStorageValue(raw){
+  // When user types MM/YY directly, store as-is
+  // When stored as YYYY-MM-DD, keep stored value but display as MM/YY
+  return raw;
+}
+const EXTRA_COLS=["Portfolio Lead","Exempted Category","Exempted Till","Revised Tenure","Email Approval","Comments"];
 const EDITABLE_STYLE={padding:"3px 6px",background:"#0f172a",border:"1px solid #334155",borderRadius:4,color:"#e2e8f0",fontSize:11,width:"100%",outline:"none",boxSizing:"border-box"};
 
 function BaseDataTable({baseData}){
@@ -1496,7 +1881,8 @@ function BaseDataTable({baseData}){
           "Exempted Category":ex["Exempted Category"]||"",
           "Exempted Till":ex["Exempted Till"]||"",
           "Revised Tenure":ex["Revised Tenure"]||"",
-          "Email Approval":ex["Email Approval"]||""
+          "Email Approval":ex["Email Approval"]||"",
+          "Comments":ex["Comments"]||""
         };
       });
       await saveBaseDataToSharePoint(mergedRows, ()=>{});
@@ -1525,15 +1911,15 @@ function BaseDataTable({baseData}){
   const getExtra=(id,col)=>(extra[id]?extra[id][col]||"":"");
   const setCell=(id,col,val)=>{
     const upd={...extra,[id]:{...(extra[id]||{}),[col]:val}};
-    if(col==="Exempted Till"){upd[id]["Revised Tenure"]=deriveRevisedTenure(val,extra[id]?.["orig_tenure"]||"");}
+    if(col==="Exempted Till"){upd[id]["Revised Tenure"]=deriveRevisedTenure(formatExemptedTill(val),extra[id]?.["orig_tenure"]||"");}
     lsExtraSave(upd);setExtra(upd);
   };
   const merged=useMemo(()=>baseData.map(r=>{
     const id=String(r["Associate ID"]??"").trim();
     const ex=extra[id]||{};
-    const exemptedTill=ex["Exempted Till"]||"";
+    const exemptedTill=formatExemptedTill(ex["Exempted Till"]||"");
     const revisedTenure=exemptedTill?deriveRevisedTenure(exemptedTill,r.Tenure):(ex["Revised Tenure"]||"");
-    return{...r,"Portfolio Lead":ex["Portfolio Lead"]||"","Exempted Category":ex["Exempted Category"]||"","Exempted Till":exemptedTill,"Revised Tenure":revisedTenure,"Email Approval":ex["Email Approval"]||""};
+    return{...r,"Portfolio Lead":ex["Portfolio Lead"]||"","Exempted Category":ex["Exempted Category"]||"","Exempted Till":exemptedTill,"Revised Tenure":revisedTenure,"Email Approval":ex["Email Approval"]||"","Comments":ex["Comments"]||""};
   }),[baseData,extra]);
   const filtered=useMemo(()=>{
     let rows=merged;
@@ -1579,8 +1965,8 @@ function BaseDataTable({baseData}){
     </div>
     <div style={{overflowX:"auto",borderRadius:10,border:"1px solid #1e293b"}}>
       <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-        <thead><tr style={{background:"#1e293b"}}>{ALL_COLUMNS.map(col=><th key={col} onClick={()=>{if(sortCol===col)setSortDir(d=>d==="asc"?"desc":"asc");else{setSortCol(col);setSortDir("asc");}}} style={{padding:"10px 12px",textAlign:"left",color:EXTRA_COLS.includes(col)?"#a78bfa":"#94a3b8",fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:"0.06em",cursor:"pointer",whiteSpace:"nowrap",userSelect:"none",borderBottom:"1px solid #334155"}}>{col}{sortCol===col?(sortDir==="asc"?" &#8593;":" &#8595;"):""}{EXTRA_COLS.includes(col)&&col!=="Revised Tenure"?<span style={{fontSize:9,color:"#7c3aed",marginLeft:3}}>&#9998;</span>:null}</th>)}</tr></thead>
-        <tbody>{pd.map((row,i)=>{const id=String(row["Associate ID"]??"").trim();return(<tr key={i} style={{background:i%2===0?"#0f172a":"#111827",borderBottom:"1px solid #1e293b"}}>{ALL_COLUMNS.map(col=>{
+        <thead><tr style={{background:"#1e293b"}}>{VISIBLE_COLUMNS.map(col=><th key={col} onClick={()=>{if(sortCol===col)setSortDir(d=>d==="asc"?"desc":"asc");else{setSortCol(col);setSortDir("asc");}}} style={{padding:"10px 12px",textAlign:"left",color:EXTRA_COLS.includes(col)?"#a78bfa":"#94a3b8",fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:"0.06em",cursor:"pointer",whiteSpace:"nowrap",userSelect:"none",borderBottom:"1px solid #334155"}}>{col}{sortCol===col?(sortDir==="asc"?" &#8593;":" &#8595;"):""}{EXTRA_COLS.includes(col)&&col!=="Revised Tenure"?<span style={{fontSize:9,color:"#7c3aed",marginLeft:3}}>&#9998;</span>:null}</th>)}</tr></thead>
+        <tbody>{pd.map((row,i)=>{const id=String(row["Associate ID"]??"").trim();return(<tr key={i} style={{background:i%2===0?"#0f172a":"#111827",borderBottom:"1px solid #1e293b"}}>{VISIBLE_COLUMNS.map(col=>{
           const isExtra=EXTRA_COLS.includes(col);
           const isReadonly=col==="Revised Tenure";
           const val=row[col]??"";
@@ -1593,8 +1979,9 @@ function BaseDataTable({baseData}){
               </td>);
             }
             if(col==="Exempted Till"){
+              const displayVal=formatExemptedTill(val);
               return(<td key={col} style={{padding:"6px 8px",whiteSpace:"nowrap",minWidth:90}}>
-                <input value={val} onChange={e=>setCell(id,col,e.target.value)} placeholder="MM/YY" maxLength={5} style={{...EDITABLE_STYLE,width:72}} />
+                <input value={displayVal} onChange={e=>setCell(id,col,e.target.value)} placeholder="MM/YY" maxLength={5} style={{...EDITABLE_STYLE,width:72}} />
               </td>);
             }
             if(col==="Exempted Category"){
@@ -1612,6 +1999,11 @@ function BaseDataTable({baseData}){
                     <option key={l.id||l.name} value={l.id}>{l.name}{l.id?` (${l.id})`:""}</option>
                   ))}
                 </select>
+              </td>);
+            }
+            if(col==="Comments"){
+              return(<td key={col} style={{padding:"6px 8px",minWidth:180,maxWidth:260}}>
+                <input value={val} onChange={e=>setCell(id,col,e.target.value)} placeholder="Add remarks..." style={{...EDITABLE_STYLE,width:"100%",minWidth:170}} />
               </td>);
             }
             return(<td key={col} style={{padding:"6px 8px",whiteSpace:"nowrap",minWidth:120}}>
@@ -1997,12 +2389,20 @@ function App(){
     const firstRow=esaRaw[0];const norm=s=>s.toLowerCase().replace(/[\s_]/g,"");const actualKeys=Object.keys(firstRow);
     const colKeyMap={};ESA_COLUMNS.forEach(c=>{const m=actualKeys.find(k=>norm(k)===norm(c));colKeyMap[c]=m||null;});
     const idKey=colKeyMap["Associate ID"]||"Associate ID";const gradeKey=colKeyMap["Grade Name"]||"Grade Name";
+    const allocKey=colKeyMap["Allocation Start Date"]||null;
     return esaRaw.map(row=>{
       const id=String(row[idKey]??"").trim();const normId=id.toLowerCase();const gradeName=String(row[gradeKey]??"").trim();
-      const fte_con=deriveFTE_CON(gradeName);const foundInUtil=utilLookup.map.size>0&&utilLookup.map.has(normId);
-      const monthDate=foundInUtil?utilLookup.map.get(normId):null;
-      const monthStr=foundInUtil?monthDate.toLocaleDateString("en-US",{month:"short",year:"numeric"}):"Not available";
-      const tenure=foundInUtil?deriveTenure(monthDate):(utilLookup.map.size>0?"<8 months":"");
+      const fte_con=deriveFTE_CON(gradeName);
+      // Primary: util lookup (earliest activity month)
+      const foundInUtil=utilLookup.map.size>0&&utilLookup.map.has(normId);
+      let monthDate=foundInUtil?utilLookup.map.get(normId):null;
+      // Fallback: Allocation Start Date from PRISM when not in util
+      if(!monthDate&&allocKey){
+        const rawAlloc=String(row[allocKey]||"").trim();
+        if(rawAlloc){const pd=new Date(rawAlloc);if(!isNaN(pd.getTime())){monthDate=new Date(pd.getFullYear(),pd.getMonth(),1);}}
+      }
+      const monthStr=monthDate?monthDate.toLocaleDateString("en-US",{month:"short",year:"numeric"}):"Not available";
+      const tenure=monthDate?deriveTenure(monthDate):(utilLookup.map.size>0?"<8 months":"");
       const base={};ESA_COLUMNS.forEach(c=>{const key=colKeyMap[c];base[c]=key?(row[key]??""):"";});
       const totalFTE=parseFloat(String(base["Total FTE"]||"1").trim())||1;
       return{...base,"Total FTE":totalFTE,FTE_CON:fte_con,Month:monthStr,Tenure:tenure};
