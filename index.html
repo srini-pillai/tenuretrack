@@ -455,7 +455,7 @@ function StatCard({label,value,sub,accent,icon,onClick}){
   return(<div onClick={onClick} style={{background:"linear-gradient(135deg,#1e293b 0%,#0f172a 100%)",border:`1px solid ${accent}33`,borderRadius:12,padding:"20px 22px",display:"flex",flexDirection:"column",gap:6,position:"relative",overflow:"hidden",cursor:onClick?"pointer":"default"}}>
     <div style={{position:"absolute",top:-20,right:-20,width:80,height:80,borderRadius:"50%",background:`${accent}18`}}/>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-      <span style={{color:"#94a3b8",fontSize:12,fontWeight:600,textTransform:"uppercase",letterSpacing:"0.08em"}}>{label}</span>
+      <span style={{color:"#94a3b8",fontSize:12,fontWeight:600,letterSpacing:"0.04em"}}>{label}</span>
       <span style={{color:accent}}>{icon}</span>
     </div>
     <span style={{color:"#f8fafc",fontSize:32,fontWeight:800,lineHeight:1}}>{value}</span>
@@ -771,73 +771,163 @@ function AtRiskDrilldown({title,associates,onClose}){
   const fteSum=rows=>new Set(rows.map(r=>String(r["Associate ID"]??"").trim()).filter(Boolean)).size;
   const extra=lsExtraLoad();
   const exemptCats=lsExemptCatLoad();
-  const accent=title.includes("> 12")?"#f87171":"#fb923c";
+  const accent=title.includes("> 12")?"#f87171":title.includes("10 to 12")?"#fb923c":title.includes("Contractor")?"#fb923c":"#a78bfa";
 
-  // Enrich with extra cols
+  // Fixed column groups — same as Tenure Status table
+  const IAR_COLS=["To be replaced","Replacement identified","Work in Progress","No Category"];
+  const NAN_COLS=["Exempted","IDC","Short Contract","Exclude","Release / Release in progress"];
+  const IAR_COLORS={"To be replaced":"#f87171","Replacement identified":"#fb923c","Work in Progress":"#fbbf24","No Category":"#64748b"};
+  const NAN_COLORS={"Exempted":"#4ade80","IDC":"#34d399","Short Contract":"#38bdf8","Exclude":"#94a3b8","Release / Release in progress":"#a78bfa"};
+
   const enriched=useMemo(()=>associates.map(r=>{
     const id=String(r["Associate ID"]??"").trim();
     const ex=extra[id]||{};
     return{...r,"Exempted Category":ex["Exempted Category"]||""};
   }),[associates,extra]);
 
-  // All exemption categories present in this dataset
-  const allCats=useMemo(()=>{
-    const raw=[...exemptCats,...enriched.map(r=>r["Exempted Category"]).filter(Boolean)];
-    const m={};raw.forEach(c=>{const k=c.toLowerCase();if(!m[k])m[k]=c;});
-    return Object.values(m).sort();
-  },[enriched,exemptCats]);
-
-  // ── Practice Area tab ────────────────────────────────────────────────────
-  // Rows: Practice Area (merged) × FTE_CON; Columns: Exempted Category + No Category + Total
   const practiceGroups=useMemo(()=>{
     const g={};
     enriched.forEach(r=>{
       const pa=r["Practice Area"]||"Unspecified";
-      const fte=r["FTE_CON"]||"FTE";
-      if(!g[pa])g[pa]={label:pa,fteRows:{}};
-      if(!g[pa].fteRows[fte])g[pa].fteRows[fte]=[];
-      g[pa].fteRows[fte].push(r);
+      if(!g[pa])g[pa]={label:pa,rows:[]};
+      g[pa].rows.push(r);
     });
-    return Object.values(g).sort((a,b)=>{
-      const aTotal=fteSum(Object.values(a.fteRows).flat());
-      const bTotal=fteSum(Object.values(b.fteRows).flat());
-      return bTotal-aTotal;
-    });
+    return Object.values(g).sort((a,b)=>fteSum(b.rows)-fteSum(a.rows));
   },[enriched]);
 
-  // ── Project Billability tab ──────────────────────────────────────────────
-  // Rows: Project Billability (merged) × FTE_CON; Columns: FTE_CON count + Total
   const billGroups=useMemo(()=>{
     const g={};
     enriched.forEach(r=>{
       const bill=r["Project Billability"]||"Unknown";
-      const fte=r["FTE_CON"]||"FTE";
-      if(!g[bill])g[bill]={label:bill,fteRows:{}};
-      if(!g[bill].fteRows[fte])g[bill].fteRows[fte]=[];
-      g[bill].fteRows[fte].push(r);
+      if(!g[bill])g[bill]={label:bill,rows:[]};
+      g[bill].rows.push(r);
     });
-    return Object.values(g).sort((a,b)=>{
-      const aTotal=fteSum(Object.values(a.fteRows).flat());
-      const bTotal=fteSum(Object.values(b.fteRows).flat());
-      return bTotal-aTotal;
-    });
+    return Object.values(g).sort((a,b)=>fteSum(b.rows)-fteSum(a.rows));
   },[enriched]);
 
-  const fteCons=[...new Set(enriched.map(r=>r["FTE_CON"]||"FTE"))].sort();
-  const btnStyle=(col)=>({background:col+"22",border:"1px solid "+col+"44",borderRadius:6,color:col,fontWeight:700,fontSize:12,cursor:"pointer",padding:"3px 10px",minWidth:32});
+  const btnStyle=(color)=>({background:color+"22",border:"1px solid "+color+"44",borderRadius:6,color,fontWeight:700,fontSize:12,cursor:"pointer",padding:"3px 10px",minWidth:32});
   const totalBtnStyle={background:"#f8fafc22",border:"1px solid #33415566",borderRadius:6,color:"#f8fafc",fontWeight:800,fontSize:12,cursor:"pointer",padding:"3px 10px",minWidth:32};
-  const thS=(col)=>({padding:"8px 10px",textAlign:"center",color:col||"#94a3b8",fontWeight:700,fontSize:10,textTransform:"uppercase",letterSpacing:"0.05em",borderBottom:"1px solid #334155",whiteSpace:"nowrap"});
-  const catColors=["#4ade80","#f87171","#fb923c","#38bdf8","#a78bfa","#fbbf24","#e879f9","#34d399","#f472b6"];
+  const thS=(color,extra={})=>({padding:"7px 10px",textAlign:"center",color:color||"#94a3b8",fontWeight:700,fontSize:10,textTransform:"uppercase",letterSpacing:"0.04em",borderBottom:"1px solid #334155",whiteSpace:"nowrap",...extra});
+
+  const getColor=(col)=>IAR_COLORS[col]||NAN_COLORS[col]||"#64748b";
+
+  const renderCell=(col,rows,label)=>{
+    if(col==="No Category"){
+      const nc=rows.filter(r=>!r["Exempted Category"]);
+      const cnt=fteSum(nc);
+      return cnt>0?<button onClick={()=>setAssocDialog({title:label+" / No Category",associates:nc})} style={btnStyle(IAR_COLORS["No Category"])}>{cnt}</button>:<span style={{color:"#334155"}}>-</span>;
+    }
+    const subset=rows.filter(r=>r["Exempted Category"]===col);
+    const cnt=fteSum(subset);
+    return cnt>0?<button onClick={()=>setAssocDialog({title:label+" / "+col,associates:subset})} style={btnStyle(getColor(col))}>{cnt}</button>:<span style={{color:"#334155"}}>-</span>;
+  };
+
+  const renderTotalCell=(col,rows,label)=>{
+    if(col==="No Category"){
+      const nc=rows.filter(r=>!r["Exempted Category"]);
+      return <button onClick={()=>setAssocDialog({title:"All / No Category",associates:nc})} style={btnStyle(IAR_COLORS["No Category"])}>{fteSum(nc)}</button>;
+    }
+    const subset=rows.filter(r=>r["Exempted Category"]===col);
+    return <button onClick={()=>setAssocDialog({title:"All / "+col,associates:subset})} style={btnStyle(getColor(col))}>{fteSum(subset)}</button>;
+  };
+
+  const GRP_HDR=(label,color,colSpan)=>(
+    <th colSpan={colSpan} style={{padding:"5px 10px",textAlign:"center",color,fontWeight:800,fontSize:10,
+      textTransform:"uppercase",letterSpacing:"0.06em",background:color+"18",
+      borderBottom:"2px solid "+color+"66",borderLeft:"2px solid "+color+"44",
+      borderRight:"2px solid "+color+"44"}}>
+      {label}
+    </th>
+  );
+
+  const renderTable=(groups)=>(
+    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+      <thead style={{position:"sticky",top:0,zIndex:2}}>
+        {/* Group header row */}
+        <tr style={{background:"#080f1f"}}>
+          <th style={{padding:"5px 10px",borderBottom:"1px solid #334155"}}/>
+          {GRP_HDR("Immediate Action Required","#f87171",IAR_COLS.length+1)}
+          {GRP_HDR("No Action Needed","#4ade80",NAN_COLS.length+1)}
+          <th style={{borderBottom:"1px solid #334155"}}/>
+        </tr>
+        {/* Column header row */}
+        <tr style={{background:"#1e293b"}}>
+          <th style={{...thS("#94a3b8"),textAlign:"left",minWidth:180}}>{viewBy==="practice"?"Practice Area":"Project Billability"}</th>
+          {IAR_COLS.map((col,ci)=>(
+            <th key={col} style={thS(IAR_COLORS[col]||"#64748b",{borderLeft:ci===0?"2px solid #f8717144":undefined})}>{col}</th>
+          ))}
+          <th style={thS("#f87171",{borderLeft:"1px solid #f8717144",borderRight:"2px solid #f8717144",background:"#f8717111"})}>IAR Total</th>
+          {NAN_COLS.map((col,ci)=>(
+            <th key={col} style={thS(NAN_COLORS[col]||"#64748b",{borderLeft:ci===0?"2px solid #4ade8044":undefined})}>{col}</th>
+          ))}
+          <th style={thS("#4ade80",{borderLeft:"1px solid #4ade8044",borderRight:"2px solid #4ade8044",background:"#4ade8011"})}>NAN Total</th>
+          <th style={thS("#f8fafc")}>Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {groups.map((group,gi)=>{
+          const bg=gi%2===0?"#0a1628":"#0f172a";
+          return(
+            <tr key={group.label} style={{background:bg,borderBottom:"1px solid #1e293b"}}>
+              <td style={{padding:"9px 12px",color:"#e2e8f0",fontWeight:700,fontSize:12,borderRight:"1px solid #1e293b",whiteSpace:"nowrap"}}>{group.label}</td>
+              {IAR_COLS.map((col,ci)=>(
+                <td key={col} style={{padding:"7px 10px",textAlign:"center",borderLeft:ci===0?"2px solid #f8717122":undefined}}>
+                  {renderCell(col,group.rows,group.label)}
+                </td>
+              ))}
+              <td style={{padding:"7px 10px",textAlign:"center",background:"#f8717108",borderLeft:"1px solid #f8717122",borderRight:"2px solid #f8717122"}}>
+                {(()=>{const r=group.rows.filter(x=>IAR_COLS.filter(c=>c!=="No Category").includes(x["Exempted Category"])||(!x["Exempted Category"]));const cnt=fteSum(r);return cnt>0?<button onClick={()=>setAssocDialog({title:group.label+" / IAR",associates:r})} style={btnStyle("#f87171")}>{cnt}</button>:<span style={{color:"#334155"}}>—</span>;})()}
+              </td>
+              {NAN_COLS.map((col,ci)=>(
+                <td key={col} style={{padding:"7px 10px",textAlign:"center",borderLeft:ci===0?"2px solid #4ade8022":undefined}}>
+                  {renderCell(col,group.rows,group.label)}
+                </td>
+              ))}
+              <td style={{padding:"7px 10px",textAlign:"center",background:"#4ade8008",borderLeft:"1px solid #4ade8022",borderRight:"2px solid #4ade8022"}}>
+                {(()=>{const r=group.rows.filter(x=>NAN_COLS.includes(x["Exempted Category"]));const cnt=fteSum(r);return cnt>0?<button onClick={()=>setAssocDialog({title:group.label+" / NAN",associates:r})} style={btnStyle("#4ade80")}>{cnt}</button>:<span style={{color:"#334155"}}>—</span>;})()}
+              </td>
+              <td style={{padding:"7px 10px",textAlign:"center"}}>
+                <button onClick={()=>setAssocDialog({title:group.label,associates:group.rows})} style={totalBtnStyle}>{fteSum(group.rows)}</button>
+              </td>
+            </tr>
+          );
+        })}
+        {/* Totals row */}
+        <tr style={{background:"#1e293b",borderTop:"2px solid #334155"}}>
+          <td style={{padding:"9px 12px",color:"#f8fafc",fontWeight:800,fontSize:12}}>TOTAL</td>
+          {IAR_COLS.map((col,ci)=>(
+            <td key={col} style={{padding:"9px 10px",textAlign:"center",borderLeft:ci===0?"2px solid #f8717122":undefined}}>
+              {renderTotalCell(col,enriched)}
+            </td>
+          ))}
+          <td style={{padding:"9px 10px",textAlign:"center",background:"#f8717108",borderLeft:"1px solid #f8717122",borderRight:"2px solid #f8717122"}}>
+            {(()=>{const r=enriched.filter(x=>IAR_COLS.filter(c=>c!=="No Category").includes(x["Exempted Category"])||(!x["Exempted Category"]));return <button onClick={()=>setAssocDialog({title:"All / IAR",associates:r})} style={{...btnStyle("#f87171"),fontWeight:800}}>{fteSum(r)}</button>;})()}
+          </td>
+          {NAN_COLS.map((col,ci)=>(
+            <td key={col} style={{padding:"9px 10px",textAlign:"center",borderLeft:ci===0?"2px solid #4ade8022":undefined}}>
+              {renderTotalCell(col,enriched)}
+            </td>
+          ))}
+          <td style={{padding:"9px 10px",textAlign:"center",background:"#4ade8008",borderLeft:"1px solid #4ade8022",borderRight:"2px solid #4ade8022"}}>
+            {(()=>{const r=enriched.filter(x=>NAN_COLS.includes(x["Exempted Category"]));return <button onClick={()=>setAssocDialog({title:"All / NAN",associates:r})} style={{...btnStyle("#4ade80"),fontWeight:800}}>{fteSum(r)}</button>;})()}
+          </td>
+          <td style={{padding:"9px 10px",textAlign:"center"}}>
+            <button onClick={()=>setAssocDialog({title:"All Associates",associates:enriched})} style={totalBtnStyle}>{fteSum(enriched)}</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  );
 
   return(
     <div style={{position:"fixed",inset:0,zIndex:1100,background:"rgba(0,0,0,0.8)",display:"flex",alignItems:"center",justifyContent:"center",padding:24}} onClick={onClose}>
-      <div style={{background:"#0f172a",border:"1px solid #334155",borderRadius:14,width:"100%",maxWidth:1300,maxHeight:"92vh",display:"flex",flexDirection:"column",overflow:"hidden"}} onClick={e=>e.stopPropagation()}>
+      <div style={{background:"#0f172a",border:"1px solid #334155",borderRadius:14,width:"100%",maxWidth:1400,maxHeight:"92vh",display:"flex",flexDirection:"column",overflow:"hidden"}} onClick={e=>e.stopPropagation()}>
 
         {/* Header */}
         <div style={{padding:"16px 24px",borderBottom:"1px solid #1e293b",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
           <div>
             <div style={{color:accent,fontWeight:800,fontSize:17}}>{title}</div>
-            <div style={{color:"#64748b",fontSize:12,marginTop:2}}>{"Total: "+fteSum(enriched)+" associates — click any count to view details"}</div>
+            <div style={{color:"#64748b",fontSize:12,marginTop:2}}>{fteSum(enriched)+" associates — click any count to view details"}</div>
           </div>
           <button onClick={onClose} style={{width:32,height:32,borderRadius:8,border:"1px solid #334155",background:"#1e293b",color:"#94a3b8",cursor:"pointer",fontSize:18,display:"flex",alignItems:"center",justifyContent:"center"}}>x</button>
         </div>
@@ -856,164 +946,15 @@ function AtRiskDrilldown({title,associates,onClose}){
         </div>
 
         {/* Table */}
-        <div style={{overflowY:"auto",flex:1}}>
-
-          {/* ── Practice Area tab ── */}
-          {viewBy==="practice"&&(
-            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-              <thead style={{position:"sticky",top:0,zIndex:2}}>
-                <tr style={{background:"#1e293b"}}>
-                  <th style={{...thS("#94a3b8"),textAlign:"left",minWidth:160}}>Practice Area</th>
-                  <th style={{...thS("#94a3b8"),textAlign:"left",minWidth:60}}>FTE Type</th>
-                  {allCats.map((cat,ci)=>(
-                    <th key={cat} style={thS(catColors[ci%catColors.length])}>{cat||"No Category"}</th>
-                  ))}
-                  <th style={thS("#64748b")}>No Category</th>
-                  <th style={thS("#f8fafc")}>Total</th>
-                </tr>
-              </thead>
-              <tbody>
-                {practiceGroups.map((group,gi)=>{
-                  const fteKeys=Object.keys(group.fteRows).sort();
-                  const allGroupRows=fteKeys.flatMap(f=>group.fteRows[f]);
-                  return fteKeys.map((fte,fi)=>{
-                    const rows=group.fteRows[fte];
-                    const isFirst=fi===0;
-                    const rowSpan=fteKeys.length;
-                    const bg=gi%2===0?"#0a1628":"#0f172a";
-                    return(
-                      <tr key={group.label+fte} style={{background:bg,borderBottom:"1px solid #1e293b"}}>
-                        {isFirst&&(
-                          <td rowSpan={rowSpan} style={{padding:"9px 12px",color:"#e2e8f0",fontWeight:700,fontSize:12,verticalAlign:"middle",borderRight:"1px solid #1e293b",borderBottom:fi===fteKeys.length-1?"1px solid #334155":"none"}}>
-                            {group.label}
-                          </td>
-                        )}
-                        <td style={{padding:"7px 10px",color:"#94a3b8",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>{fte}</td>
-                        {allCats.map((cat,ci)=>{
-                          const subset=rows.filter(r=>r["Exempted Category"]===cat);
-                          const cnt=fteSum(subset);
-                          return(<td key={cat} style={{padding:"7px 10px",textAlign:"center"}}>
-                            {cnt>0?<button onClick={()=>setAssocDialog({title:group.label+" / "+fte+" / "+cat,associates:subset})} style={btnStyle(catColors[ci%catColors.length])}>{cnt}</button>:<span style={{color:"#334155"}}>-</span>}
-                          </td>);
-                        })}
-                        {(()=>{
-                          const nocat=rows.filter(r=>!r["Exempted Category"]);
-                          const cnt=fteSum(nocat);
-                          return(<td style={{padding:"7px 10px",textAlign:"center"}}>
-                            {cnt>0?<button onClick={()=>setAssocDialog({title:group.label+" / "+fte+" / No Category",associates:nocat})} style={btnStyle("#64748b")}>{cnt}</button>:<span style={{color:"#334155"}}>-</span>}
-                          </td>);
-                        })()}
-                        <td style={{padding:"7px 10px",textAlign:"center"}}>
-                          <button onClick={()=>setAssocDialog({title:group.label+" / "+fte,associates:rows})} style={totalBtnStyle}>{fteSum(rows)}</button>
-                        </td>
-                      </tr>
-                    );
-                  });
-                })}
-                {/* Totals row */}
-                <tr style={{background:"#1e293b",borderTop:"2px solid #334155"}}>
-                  <td colSpan={2} style={{padding:"9px 12px",color:"#f8fafc",fontWeight:800,fontSize:12}}>TOTAL</td>
-                  {allCats.map((cat,ci)=>{
-                    const subset=enriched.filter(r=>r["Exempted Category"]===cat);
-                    const cnt=fteSum(subset);
-                    return(<td key={cat} style={{padding:"9px 10px",textAlign:"center"}}>
-                      <button onClick={()=>setAssocDialog({title:"All / "+cat,associates:subset})} style={btnStyle(catColors[ci%catColors.length])}>{cnt}</button>
-                    </td>);
-                  })}
-                  {(()=>{
-                    const nocat=enriched.filter(r=>!r["Exempted Category"]);
-                    return(<td style={{padding:"9px 10px",textAlign:"center"}}>
-                      <button onClick={()=>setAssocDialog({title:"All / No Category",associates:nocat})} style={btnStyle("#64748b")}>{fteSum(nocat)}</button>
-                    </td>);
-                  })()}
-                  <td style={{padding:"9px 10px",textAlign:"center"}}>
-                    <button onClick={()=>setAssocDialog({title:"All Associates",associates:enriched})} style={totalBtnStyle}>{fteSum(enriched)}</button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          )}
-
-          {/* ── Project Billability tab ── */}
-          {viewBy==="billability"&&(
-            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-              <thead style={{position:"sticky",top:0,zIndex:2}}>
-                <tr style={{background:"#1e293b"}}>
-                  <th style={{...thS("#94a3b8"),textAlign:"left",minWidth:140}}>Project Billability</th>
-                  <th style={{...thS("#94a3b8"),textAlign:"left",minWidth:60}}>FTE Type</th>
-                  {allCats.map((cat,ci)=>(
-                    <th key={cat} style={thS(catColors[ci%catColors.length])}>{cat||"No Category"}</th>
-                  ))}
-                  <th style={thS("#64748b")}>No Category</th>
-                  <th style={thS("#f8fafc")}>Total</th>
-                </tr>
-              </thead>
-              <tbody>
-                {billGroups.map((group,gi)=>{
-                  const fteKeys=Object.keys(group.fteRows).sort();
-                  const bg=gi%2===0?"#0a1628":"#0f172a";
-                  return fteKeys.map((fte,fi)=>{
-                    const rows=group.fteRows[fte];
-                    const isFirst=fi===0;
-                    const rowSpan=fteKeys.length;
-                    return(
-                      <tr key={group.label+fte} style={{background:bg,borderBottom:"1px solid #1e293b"}}>
-                        {isFirst&&(
-                          <td rowSpan={rowSpan} style={{padding:"9px 12px",color:"#e2e8f0",fontWeight:700,fontSize:12,verticalAlign:"middle",borderRight:"1px solid #1e293b"}}>
-                            {group.label}
-                          </td>
-                        )}
-                        <td style={{padding:"7px 10px",color:"#94a3b8",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>{fte}</td>
-                        {allCats.map((cat,ci)=>{
-                          const subset=rows.filter(r=>r["Exempted Category"]===cat);
-                          const cnt=fteSum(subset);
-                          return(<td key={cat} style={{padding:"7px 10px",textAlign:"center"}}>
-                            {cnt>0?<button onClick={()=>setAssocDialog({title:group.label+" / "+fte+" / "+cat,associates:subset})} style={btnStyle(catColors[ci%catColors.length])}>{cnt}</button>:<span style={{color:"#334155"}}>-</span>}
-                          </td>);
-                        })}
-                        {(()=>{
-                          const nocat=rows.filter(r=>!r["Exempted Category"]);
-                          const cnt=fteSum(nocat);
-                          return(<td style={{padding:"7px 10px",textAlign:"center"}}>
-                            {cnt>0?<button onClick={()=>setAssocDialog({title:group.label+" / "+fte+" / No Category",associates:nocat})} style={btnStyle("#64748b")}>{cnt}</button>:<span style={{color:"#334155"}}>-</span>}
-                          </td>);
-                        })()}
-                        <td style={{padding:"7px 10px",textAlign:"center"}}>
-                          <button onClick={()=>setAssocDialog({title:group.label+" / "+fte,associates:rows})} style={totalBtnStyle}>{fteSum(rows)}</button>
-                        </td>
-                      </tr>
-                    );
-                  });
-                })}
-                <tr style={{background:"#1e293b",borderTop:"2px solid #334155"}}>
-                  <td colSpan={2} style={{padding:"9px 12px",color:"#f8fafc",fontWeight:800,fontSize:12}}>TOTAL</td>
-                  {allCats.map((cat,ci)=>{
-                    const subset=enriched.filter(r=>r["Exempted Category"]===cat);
-                    const cnt=fteSum(subset);
-                    return(<td key={cat} style={{padding:"9px 10px",textAlign:"center"}}>
-                      <button onClick={()=>setAssocDialog({title:"All / "+cat,associates:subset})} style={btnStyle(catColors[ci%catColors.length])}>{cnt}</button>
-                    </td>);
-                  })}
-                  {(()=>{
-                    const nocat=enriched.filter(r=>!r["Exempted Category"]);
-                    return(<td style={{padding:"9px 10px",textAlign:"center"}}>
-                      <button onClick={()=>setAssocDialog({title:"All / No Category",associates:nocat})} style={btnStyle("#64748b")}>{fteSum(nocat)}</button>
-                    </td>);
-                  })()}
-                  <td style={{padding:"9px 10px",textAlign:"center"}}>
-                    <button onClick={()=>setAssocDialog({title:"All Associates",associates:enriched})} style={totalBtnStyle}>{fteSum(enriched)}</button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          )}
-
+        <div style={{overflowY:"auto",overflowX:"auto",flex:1}}>
+          {renderTable(viewBy==="practice"?practiceGroups:billGroups)}
         </div>
       </div>
       {assocDialog&&<AssociateDialog title={assocDialog.title} associates={assocDialog.associates} onClose={()=>setAssocDialog(null)}/>}
     </div>
   );
 }
+
 
 
 function TenureStatusDrilldown({exemptCategory, associates, onClose}) {
@@ -1173,148 +1114,145 @@ function TenureStatusPanel({baseData}) {
   const extra = lsExtraLoad();
   const exemptCats = lsExemptCatLoad();
 
-  // Helper: FTE count per unique associate; uses real Total FTE if available, else headcount
   const fteSum=rows=>{
     const ids=new Set(rows.map(r=>String(r["Associate ID"]??"").trim()).filter(Boolean));
     return ids.size;
   };
 
-  const exportToXLS = async (over12, allCats, rowData) => {
+  // Fixed column groups
+  // Immediate action required (shown first) — red theme
+  const IAR_COLS = ["To be replaced","Replacement identified","Work in Progress","No Category"];
+  // No action needed (shown second) — green theme
+  const NAN_COLS = ["Exempted","IDC","Short Contract","Exclude","Release / Release in progress"];
+
+  const exportToXLS = async (over12, rowData) => {
     const XLSX = await loadSheetJS();
     const plLeads = lsPortfolioLoad();
     const plMap = Object.fromEntries(plLeads.filter(l=>l.id).map(l=>[l.id, l.name ? l.name+" ("+l.id+")" : l.id]));
     const extraData = lsExtraLoad();
-
-    // ── Sheet 1: Summary Matrix ───────────────────────────────────────────────
-    const summaryRows = [];
-    // Header row
-    const headerRow = ["Billability","FTE Type", ...allCats, "No Category", "Total"];
-    summaryRows.push(headerRow);
-    // Data rows
+    const allCols = [...IAR_COLS, ...NAN_COLS];
+    const headerRow = ["Billability","FTE Type",...allCols.filter(c=>c!=="No Category"),"No Category","Total"];
+    const summaryRows = [headerRow];
     rowData.forEach(({bill, fteRows}) => {
       fteRows.forEach(({fte, subset}) => {
         const row = [bill, fte];
-        allCats.forEach(cat => {
-          row.push(fteSum(subset.filter(r => r["Exempted Category"] === cat)));
+        allCols.forEach(cat => {
+          if(cat==="No Category") row.push(fteSum(subset.filter(r=>!r["Exempted Category"])));
+          else row.push(fteSum(subset.filter(r=>r["Exempted Category"]===cat)));
         });
-        row.push(fteSum(subset.filter(r => !r["Exempted Category"])));
         row.push(fteSum(subset));
         summaryRows.push(row);
       });
     });
-    // Total row
-    const totalRow = ["TOTAL", ""];
-    allCats.forEach(cat => {
-      totalRow.push(fteSum(over12.filter(r => r["Exempted Category"] === cat)));
+    const totalRow = ["TOTAL",""];
+    allCols.forEach(cat => {
+      if(cat==="No Category") totalRow.push(fteSum(over12.filter(r=>!r["Exempted Category"])));
+      else totalRow.push(fteSum(over12.filter(r=>r["Exempted Category"]===cat)));
     });
-    totalRow.push(fteSum(over12.filter(r => !r["Exempted Category"])));
     totalRow.push(fteSum(over12));
     summaryRows.push(totalRow);
-
-    // ── Sheet 2: Associate Details ────────────────────────────────────────────
     const detailCols = ["Associate ID","Associate Name","Grade Name","Project Billability","FTE Type","Location Group Name","Is Onsite","Project Id","Project Name","Practice Area","Tenure","Portfolio Lead","Exempted Category","Exempted Till","Revised Tenure","Email Approval"];
     const detailRows = [detailCols];
-    // Deduplicate by Associate ID for detail sheet
     const seen = new Set();
     over12.forEach(r => {
       const id = String(r["Associate ID"]??"").trim();
-      if (!id || seen.has(id)) return;
+      if(!id||seen.has(id)) return;
       seen.add(id);
-      const ex = extraData[id] || {};
-      const plId = ex["Portfolio Lead"] || "";
-      detailRows.push([
-        id,
-        r["Associate Name"] || "",
-        r["Grade Name"] || "",
-        r["Project Billability"] || "",
-        r["FTE_CON"] || "",
-        r["Location Group Name"] || "",
-        r["Is Onsite"] || "",
-        r["Project Id"] || "",
-        r["Project Name"] || "",
-        r["Practice Area"] || "",
-        r["Tenure"] || "",
-        plId ? (plMap[plId] || plId) : "",
-        ex["Exempted Category"] || "",
-        ex["Exempted Till"] || "",
-        ex["Revised Tenure"] || "",
-        ex["Email Approval"] || "",
-      ]);
+      const ex = extraData[id]||{};
+      const plId = ex["Portfolio Lead"]||"";
+      detailRows.push([id,r["Associate Name"]||"",r["Grade Name"]||"",r["Project Billability"]||"",r["FTE_CON"]||"",r["Location Group Name"]||"",r["Is Onsite"]||"",r["Project Id"]||"",r["Project Name"]||"",r["Practice Area"]||"",r["Tenure"]||"",plId?(plMap[plId]||plId):"",ex["Exempted Category"]||"",ex["Exempted Till"]||"",ex["Revised Tenure"]||"",ex["Email Approval"]||""]);
     });
-
-    // ── Build workbook ────────────────────────────────────────────────────────
     const wb = XLSX.utils.book_new();
     const ws1 = XLSX.utils.aoa_to_sheet(summaryRows);
     const ws2 = XLSX.utils.aoa_to_sheet(detailRows);
-
-    // Style header rows bold by setting column widths
-    ws1["!cols"] = headerRow.map((h,i) => ({wch: i < 2 ? 16 : Math.max(String(h).length+2, 14)}));
-    ws2["!cols"] = detailCols.map(h => ({wch: Math.max(String(h).length+2, 14)}));
-
-    XLSX.utils.book_append_sheet(wb, ws1, "Tenure Status Summary");
-    XLSX.utils.book_append_sheet(wb, ws2, "Associate Details");
-
-    const today = new Date().toISOString().slice(0,10);
-    XLSX.writeFile(wb, "TenureStatus_Over12Months_"+today+".xlsx");
+    ws1["!cols"] = headerRow.map((h,i)=>({wch:i<2?16:Math.max(String(h).length+2,14)}));
+    ws2["!cols"] = detailCols.map(h=>({wch:Math.max(String(h).length+2,14)}));
+    XLSX.utils.book_append_sheet(wb,ws1,"Tenure Status Summary");
+    XLSX.utils.book_append_sheet(wb,ws2,"Associate Details");
+    XLSX.writeFile(wb,"TenureStatus_Over12Months_"+new Date().toISOString().slice(0,10)+".xlsx");
   };
 
-  // Merge extra into over-12 associates — exclude NBL billability
   const over12 = useMemo(() => {
-    // FTE: tenure > 12 months (excluding NBL)
     const ftePart = baseData.filter(r =>
-      r["FTE_CON"] !== "Cont" &&
-      r.Tenure === "> 12 months" &&
-      r["Project Billability"] !== "NBL"
+      r["FTE_CON"] !== "Cont" && r.Tenure === "> 12 months" && r["Project Billability"] !== "NBL"
     );
-    // Cont: ALL under BTM or BFD regardless of tenure
     const contPart = baseData.filter(r =>
-      r["FTE_CON"] === "Cont" &&
-      (r["Project Billability"] === "BTM" || r["Project Billability"] === "BFD")
+      r["FTE_CON"] === "Cont" && (r["Project Billability"] === "BTM" || r["Project Billability"] === "BFD")
     );
-    return [...ftePart, ...contPart].map(r => {
-      const id = String(r["Associate ID"] ?? "").trim();
-      const ex = extra[id] || {};
-      return { ...r, "Exempted Category": ex["Exempted Category"] || "" };
+    return [...ftePart,...contPart].map(r => {
+      const id = String(r["Associate ID"]??"").trim();
+      const ex = extra[id]||{};
+      return {...r,"Exempted Category":ex["Exempted Category"]||""};
     });
-  }, [baseData, extra]);
+  },[baseData,extra]);
 
-  // Billability values (excluding NBL) and FTE_CON values
-  const billabilities = [...new Set(over12.map(r => r["Project Billability"] || "Unknown"))].sort();
-  const fteCons = [...new Set(over12.map(r => r["FTE_CON"] || "Unknown"))].sort();
+  const billabilities = [...new Set(over12.map(r=>r["Project Billability"]||"Unknown"))].sort();
+  const fteCons = [...new Set(over12.map(r=>r["FTE_CON"]||"Unknown"))].sort();
 
-  // All exemption categories
-  const _acRaw=[...exemptCats,...over12.map(r=>r["Exempted Category"]).filter(Boolean)];const _acMap={};_acRaw.forEach(c=>{const k=c.toLowerCase();if(!_acMap[k])_acMap[k]=c;});allCats=Object.values(_acMap).sort();
-  const catColors = ["#4ade80","#f87171","#fb923c","#38bdf8","#a78bfa","#fbbf24","#e879f9","#34d399"];
+  const rowData = useMemo(()=>billabilities.map(bill=>{
+    const billSubset=over12.filter(r=>(r["Project Billability"]||"Unknown")===bill);
+    const fteRows=fteCons.map(fte=>{
+      const subset=billSubset.filter(r=>(r["FTE_CON"]||"Unknown")===fte);
+      return{fte,subset};
+    }).filter(row=>row.subset.length>0);
+    return{bill,billSubset,fteRows};
+  }),[over12,billabilities,fteCons]);
 
-  // Build row data: for each billability, compute per-FTE rows and also a merged subtotal
-  const rowData = useMemo(() => {
-    return billabilities.map(bill => {
-      const billSubset = over12.filter(r => (r["Project Billability"]||"Unknown") === bill);
-      const fteRows = fteCons.map(fte => {
-        const subset = billSubset.filter(r => (r["FTE_CON"]||"Unknown") === fte);
-        return { fte, subset };
-      }).filter(row => row.subset.length > 0);
-      return { bill, billSubset, fteRows };
-    });
-  }, [over12, billabilities, fteCons]);
-
-  if (!over12.length) return (
+  if(!over12.length) return(
     <div style={{background:"#1e293b",border:"1px solid #334155",borderRadius:12,padding:"24px",textAlign:"center",color:"#475569",fontSize:14}}>
       No associates match the Tenure Status criteria
     </div>
   );
 
-  const thStyle = (color) => ({padding:"8px 10px",textAlign:"center",color:color,fontWeight:700,fontSize:10,textTransform:"uppercase",borderBottom:"1px solid #334155",minWidth:90});
-  const btnStyle = (color) => ({background:color+"22",border:"1px solid "+color+"44",borderRadius:6,color:color,fontWeight:700,fontSize:12,cursor:"pointer",padding:"2px 10px",minWidth:32});
+  // Colours
+  // IAR: red palette per column
+  const IAR_COLORS = {"To be replaced":"#f87171","Replacement identified":"#fb923c","Work in Progress":"#fbbf24","No Category":"#64748b"};
+  // NAN: green palette per column
+  const NAN_COLORS = {"Exempted":"#4ade80","IDC":"#34d399","Short Contract":"#38bdf8","Exclude":"#94a3b8","Release / Release in progress":"#a78bfa"};
 
-  return (
+  const thStyle=(color,extra={})=>({padding:"7px 10px",textAlign:"center",color,fontWeight:700,fontSize:10,textTransform:"uppercase",letterSpacing:"0.04em",borderBottom:"1px solid #334155",minWidth:88,whiteSpace:"nowrap",...extra});
+  const btnStyle=(color)=>({background:color+"22",border:"1px solid "+color+"44",borderRadius:6,color,fontWeight:700,fontSize:12,cursor:"pointer",padding:"2px 10px",minWidth:32});
+  const totalBtnStyle={background:"#f8fafc22",border:"1px solid #33415566",borderRadius:6,color:"#f8fafc",fontWeight:800,fontSize:12,cursor:"pointer",padding:"2px 10px",minWidth:32};
+
+  // Helper: render a cell for a given column name
+  const renderCell=(col,subset,bill,fte)=>{
+    if(col==="No Category"){
+      const nc=subset.filter(r=>!r["Exempted Category"]);
+      const cnt=fteSum(nc);
+      return cnt>0?<button onClick={()=>setDrilldown({category:"No Category Assigned",associates:nc})} style={btnStyle(IAR_COLORS["No Category"])}>{cnt}</button>:<span style={{color:"#1e293b"}}>—</span>;
+    }
+    const catSubset=subset.filter(r=>r["Exempted Category"]===col);
+    const cnt=fteSum(catSubset);
+    const color=IAR_COLORS[col]||NAN_COLORS[col]||"#64748b";
+    return cnt>0?<button onClick={()=>setDrilldown({category:col,associates:catSubset})} style={btnStyle(color)}>{cnt}</button>:<span style={{color:"#1e293b"}}>—</span>;
+  };
+  const renderTotalCell=(col)=>{
+    if(col==="No Category"){
+      const nc=over12.filter(r=>!r["Exempted Category"]);
+      return <button onClick={()=>setDrilldown({category:"No Category Assigned",associates:nc})} style={btnStyle(IAR_COLORS["No Category"])}>{fteSum(nc)}</button>;
+    }
+    const catRows=over12.filter(r=>r["Exempted Category"]===col);
+    const color=IAR_COLORS[col]||NAN_COLORS[col]||"#64748b";
+    return <button onClick={()=>setDrilldown({category:col,associates:catRows})} style={btnStyle(color)}>{fteSum(catRows)}</button>;
+  };
+
+  const GRP_HDR=(label,color,colSpan)=>(
+    <th colSpan={colSpan} style={{padding:"6px 10px",textAlign:"center",color,fontWeight:800,fontSize:10,
+      textTransform:"uppercase",letterSpacing:"0.06em",background:color+"18",
+      borderBottom:"2px solid "+color+"66",borderLeft:"2px solid "+color+"44",
+      borderRight:"2px solid "+color+"44"}}>
+      {label}
+    </th>
+  );
+
+  return(
     <div style={{background:"#1e293b",border:"1px solid #334155",borderRadius:12,padding:"20px 22px"}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4,flexWrap:"wrap",gap:8}}>
         <div>
           <div style={{color:"#94a3b8",fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.08em"}}>Tenure Status (FTE &gt; 12 months + All Cont BTM/BFD) | Count: {fteSum(over12)} | Rows: {over12.length}</div>
-          <div style={{color:"#475569",fontSize:11,marginTop:4}}>Billability and FTE type shown as separate columns. NBL excluded. Click any count to drill down.</div>
+          <div style={{color:"#475569",fontSize:11,marginTop:4}}>NBL excluded. Click any count to drill down.</div>
         </div>
-        <button onClick={()=>exportToXLS(over12,allCats,rowData)} style={{display:"flex",alignItems:"center",gap:6,padding:"7px 14px",borderRadius:8,fontSize:12,fontWeight:700,cursor:"pointer",background:"#16a34a22",border:"1px solid #16a34a",color:"#4ade80",flexShrink:0}}>
+        <button onClick={()=>exportToXLS(over12,rowData)} style={{display:"flex",alignItems:"center",gap:6,padding:"7px 14px",borderRadius:8,fontSize:12,fontWeight:700,cursor:"pointer",background:"#16a34a22",border:"1px solid #16a34a",color:"#4ade80",flexShrink:0}}>
           &#8681; Export to XLS
         </button>
       </div>
@@ -1322,63 +1260,59 @@ function TenureStatusPanel({baseData}) {
       <div style={{overflowX:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
           <thead>
+            {/* Row 1: Group headers */}
+            <tr style={{background:"#080f1f"}}>
+              <th colSpan={2} style={{padding:"6px 10px",borderBottom:"1px solid #334155"}}/>
+              {GRP_HDR("Immediate Action Required","#f87171",IAR_COLS.length+1)}
+              {GRP_HDR("No Action Needed","#4ade80",NAN_COLS.length+1)}
+              <th style={{borderBottom:"1px solid #334155"}}/>
+            </tr>
+            {/* Row 2: Column headers */}
             <tr style={{background:"#0f172a"}}>
               <th style={{padding:"8px 12px",textAlign:"left",color:"#64748b",fontWeight:700,fontSize:11,textTransform:"uppercase",borderBottom:"1px solid #334155",minWidth:100}}>Billability</th>
               <th style={{padding:"8px 12px",textAlign:"left",color:"#64748b",fontWeight:700,fontSize:11,textTransform:"uppercase",borderBottom:"1px solid #334155",minWidth:80}}>FTE Type</th>
-              {allCats.map((cat,ci) => (
-                <th key={cat} style={thStyle(catColors[ci%catColors.length])}>
-                  {cat || "No Category"}
-                </th>
+              {IAR_COLS.map(col=>(
+                <th key={col} style={thStyle(IAR_COLORS[col]||"#64748b",{borderLeft:col===IAR_COLS[0]?"2px solid #f8717144":undefined})}>{col}</th>
               ))}
-              <th style={thStyle("#94a3b8")}>No Category</th>
+              <th style={thStyle("#f87171",{borderLeft:"1px solid #f8717144",borderRight:"2px solid #f8717144",background:"#f8717111"})}>IAR Total</th>
+              {NAN_COLS.map(col=>(
+                <th key={col} style={thStyle(NAN_COLORS[col]||"#64748b",{borderLeft:col===NAN_COLS[0]?"2px solid #4ade8044":undefined})}>{col}</th>
+              ))}
+              <th style={thStyle("#4ade80",{borderLeft:"1px solid #4ade8044",borderRight:"2px solid #4ade8044",background:"#4ade8011"})}>NAN Total</th>
               <th style={{...thStyle("#f8fafc"),fontSize:11}}>Total</th>
             </tr>
           </thead>
           <tbody>
-            {rowData.map(({bill, billSubset, fteRows}, bi) => {
-              const rowSpan = fteRows.length;
-              return fteRows.map((fteRow, fi) => {
-                const {fte, subset} = fteRow;
-                const rowBg = bi%2===0?"#0a1628":"#0f172a";
-                return (
+            {rowData.map(({bill,billSubset,fteRows},bi)=>{
+              const rowSpan=fteRows.length;
+              return fteRows.map(({fte,subset},fi)=>{
+                const rowBg=bi%2===0?"#0a1628":"#0f172a";
+                return(
                   <tr key={bill+"_"+fte} style={{background:rowBg,borderBottom:"1px solid #1e293b"}}>
-                    {/* Billability cell — only rendered on first FTE row, spans all FTE rows */}
-                    {fi===0 && (
+                    {fi===0&&(
                       <td rowSpan={rowSpan} style={{padding:"8px 12px",color:"#f8fafc",fontWeight:800,fontSize:12,borderBottom:"2px solid #334155",verticalAlign:"middle",background:rowBg,borderRight:"1px solid #334155"}}>
                         {bill}
                       </td>
                     )}
-                    <td style={{padding:"8px 12px",color:"#94a3b8",fontWeight:600,fontSize:11,borderBottom:"1px solid #1e293b"}}>
-                      {fte}
+                    <td style={{padding:"8px 12px",color:"#94a3b8",fontWeight:600,fontSize:11,borderBottom:"1px solid #1e293b"}}>{fte}</td>
+                    {IAR_COLS.map((col,ci)=>(
+                      <td key={col} style={{padding:"8px 10px",textAlign:"center",borderLeft:ci===0?"2px solid #f8717122":undefined}}>
+                        {renderCell(col,subset,bill,fte)}
+                      </td>
+                    ))}
+                    <td style={{padding:"8px 10px",textAlign:"center",background:"#f8717108",borderLeft:"1px solid #f8717122",borderRight:"2px solid #f8717122"}}>
+                      {(()=>{const iarRows=subset.filter(r=>IAR_COLS.filter(c=>c!=="No Category").includes(r["Exempted Category"])||(!r["Exempted Category"]&&IAR_COLS.includes("No Category")));const cnt=fteSum(iarRows);return cnt>0?<button onClick={()=>setDrilldown({category:bill+" / "+fte+" / IAR",associates:iarRows})} style={btnStyle("#f87171")}>{cnt}</button>:<span style={{color:"#334155"}}>—</span>;})()}
                     </td>
-                    {allCats.map((cat, ci) => {
-                      const catSubset = subset.filter(r => r["Exempted Category"] === cat);
-                      return (
-                        <td key={cat} style={{padding:"8px 10px",textAlign:"center"}}>
-                          {catSubset.length > 0 ? (
-                            <button onClick={()=>setDrilldown({category:cat,associates:catSubset})} style={btnStyle(catColors[ci%catColors.length])}>
-                              {fteSum(catSubset)}
-                            </button>
-                          ) : <span style={{color:"#1e293b"}}>—</span>}
-                        </td>
-                      );
-                    })}
-                    {(()=>{
-                      const nc = subset.filter(r => !r["Exempted Category"]);
-                      return (
-                        <td style={{padding:"8px 10px",textAlign:"center"}}>
-                          {nc.length > 0 ? (
-                            <button onClick={()=>setDrilldown({category:"No Category Assigned",associates:nc})} style={btnStyle("#64748b")}>
-                              {fteSum(nc)}
-                            </button>
-                          ) : <span style={{color:"#1e293b"}}>—</span>}
-                        </td>
-                      );
-                    })()}
+                    {NAN_COLS.map((col,ci)=>(
+                      <td key={col} style={{padding:"8px 10px",textAlign:"center",borderLeft:ci===0?"2px solid #4ade8022":undefined}}>
+                        {renderCell(col,subset,bill,fte)}
+                      </td>
+                    ))}
+                    <td style={{padding:"8px 10px",textAlign:"center",background:"#4ade8008",borderLeft:"1px solid #4ade8022",borderRight:"2px solid #4ade8022"}}>
+                      {(()=>{const nanRows=subset.filter(r=>NAN_COLS.includes(r["Exempted Category"]));const cnt=fteSum(nanRows);return cnt>0?<button onClick={()=>setDrilldown({category:bill+" / "+fte+" / NAN",associates:nanRows})} style={btnStyle("#4ade80")}>{cnt}</button>:<span style={{color:"#334155"}}>—</span>;})()}
+                    </td>
                     <td style={{padding:"8px 10px",textAlign:"center"}}>
-                      <button onClick={()=>setDrilldown({category:bill+" / "+fte,associates:subset})} style={btnStyle("#94a3b8")}>
-                        {fteSum(subset)}
-                      </button>
+                      <button onClick={()=>setDrilldown({category:bill+" / "+fte,associates:subset})} style={btnStyle("#94a3b8")}>{fteSum(subset)}</button>
                     </td>
                   </tr>
                 );
@@ -1387,33 +1321,30 @@ function TenureStatusPanel({baseData}) {
             {/* Grand total row */}
             <tr style={{background:"#1e293b",borderTop:"2px solid #334155"}}>
               <td colSpan={2} style={{padding:"9px 12px",color:"#f8fafc",fontWeight:800,fontSize:12}}>TOTAL</td>
-              {allCats.map((cat, ci) => {
-                const catRows=over12.filter(r => r["Exempted Category"] === cat);
-                const tot = fteSum(catRows);
-                return (
-                  <td key={cat} style={{padding:"9px 10px",textAlign:"center"}}>
-                    <button onClick={()=>setDrilldown({category:cat,associates:catRows})} style={btnStyle(catColors[ci%catColors.length])}>
-                      {tot}
-                    </button>
-                  </td>
-                );
-              })}
-              {(()=>{
-                const nc = over12.filter(r => !r["Exempted Category"]);
-                return (
-                  <td style={{padding:"9px 10px",textAlign:"center"}}>
-                    <button onClick={()=>setDrilldown({category:"No Category Assigned",associates:nc})} style={btnStyle("#64748b")}>
-                      {fteSum(nc)}
-                    </button>
-                  </td>
-                );
-              })()}
-              <td style={{padding:"9px 10px",textAlign:"center"}}><button onClick={()=>setDrilldown({category:"__all__",associates:over12})} style={{background:"#f8fafc22",border:"1px solid #33415566",borderRadius:6,color:"#f8fafc",fontWeight:800,fontSize:13,cursor:"pointer",padding:"3px 10px",minWidth:36}}>{fteSum(over12)}</button></td>
+              {IAR_COLS.map((col,ci)=>(
+                <td key={col} style={{padding:"9px 10px",textAlign:"center",borderLeft:ci===0?"2px solid #f8717122":undefined}}>
+                  {renderTotalCell(col)}
+                </td>
+              ))}
+              <td style={{padding:"9px 10px",textAlign:"center",background:"#f8717108",borderLeft:"1px solid #f8717122",borderRight:"2px solid #f8717122"}}>
+                {(()=>{const r=over12.filter(x=>IAR_COLS.filter(c=>c!=="No Category").includes(x["Exempted Category"])||(!x["Exempted Category"]));return <button onClick={()=>setDrilldown({category:"IAR Total",associates:r})} style={{...btnStyle("#f87171"),fontWeight:800}}>{fteSum(r)}</button>;})()}
+              </td>
+              {NAN_COLS.map((col,ci)=>(
+                <td key={col} style={{padding:"9px 10px",textAlign:"center",borderLeft:ci===0?"2px solid #4ade8022":undefined}}>
+                  {renderTotalCell(col)}
+                </td>
+              ))}
+              <td style={{padding:"9px 10px",textAlign:"center",background:"#4ade8008",borderLeft:"1px solid #4ade8022",borderRight:"2px solid #4ade8022"}}>
+                {(()=>{const r=over12.filter(x=>NAN_COLS.includes(x["Exempted Category"]));return <button onClick={()=>setDrilldown({category:"NAN Total",associates:r})} style={{...btnStyle("#4ade80"),fontWeight:800}}>{fteSum(r)}</button>;})()}
+              </td>
+              <td style={{padding:"9px 10px",textAlign:"center"}}>
+                <button onClick={()=>setDrilldown({category:"__all__",associates:over12})} style={totalBtnStyle}>{fteSum(over12)}</button>
+              </td>
             </tr>
           </tbody>
         </table>
       </div>
-      {drilldown && (
+      {drilldown&&(
         <TenureStatusDrilldown
           exemptCategory={drilldown.category==="__all__"?"All Associates (> 12 months)":drilldown.category}
           associates={drilldown.associates}
@@ -1424,8 +1355,9 @@ function TenureStatusPanel({baseData}) {
   );
 }
 
+
 function Dashboard({baseData}){
-  const [dialog,setDialog]=useState(null);const [atRiskDialog,setAtRiskDialog]=useState(null);
+  const [dialog,setDialog]=useState(null);const [atRiskDialog,setAtRiskDialog]=useState(null);const [contDialog,setContDialog]=useState(null);
   const stats=useMemo(()=>{
     // FTE count = count of unique associates (deduplicated by Associate ID)
     // Associates can appear multiple times (one row per project allocation)
@@ -1450,28 +1382,31 @@ function Dashboard({baseData}){
     const tCounts={};Object.keys(tc).forEach(k=>{tCounts[k]=tc[k].size;});
     const tCol={"<8 months":"#38bdf8","8 to 10 months":"#a78bfa","10 to 12 months":"#fb923c","> 12 months":"#f87171","Unknown":"#64748b"};
     const ts=Object.entries(tCounts).filter(([,v])=>v>0).map(([k,v])=>({label:k,value:v,color:tCol[k]||"#64748b"}));
-    const over12rows=baseData.filter(r=>r.Tenure==="> 12 months");
-    const tenTo12rows=baseData.filter(r=>r.Tenure==="10 to 12 months");
+    const over12rows=baseData.filter(r=>r.Tenure==="> 12 months"&&r.FTE_CON!=="Cont");
+    const tenTo12rows=baseData.filter(r=>r.Tenure==="10 to 12 months"&&r.FTE_CON!=="Cont");
+    const eightTo10rows=baseData.filter(r=>r.Tenure==="8 to 10 months"&&r.FTE_CON!=="Cont");
     return{total,headcount,tenureSegments:ts,billabilityCounts:bc,
       over12:over12rows,over12Count:uniqueCount(over12rows),
       tenTo12:tenTo12rows,tenTo12Count:uniqueCount(tenTo12rows),
-      eightTo10:baseData.filter(r=>r.Tenure==="8 to 10 months"),
-      eightTo10Count:uniqueCount(baseData.filter(r=>r.Tenure==="8 to 10 months"))};
+      eightTo10:eightTo10rows,
+      eightTo10Count:uniqueCount(eightTo10rows),
+      contRows:baseData.filter(r=>r.FTE_CON==="Cont"),
+      contCount:uniqueCount(baseData.filter(r=>r.FTE_CON==="Cont"))};
   },[baseData]);
   if(!baseData.length)return(<div style={{padding:"80px 36px",textAlign:"center"}}><div style={{color:"#334155",fontSize:48,marginBottom:16}}><Icon name="bar" size={56}/></div><div style={{color:"#475569",fontSize:18,fontWeight:600}}>No data to display</div><div style={{color:"#334155",fontSize:14,marginTop:8}}>Data loads automatically — or go to Upload to refresh</div></div>);
   return(<div style={{padding:"32px 36px"}}>
-    {dialog&&<AssociateDialog title={dialog.title} associates={dialog.associates} onClose={()=>setDialog(null)}/>}{atRiskDialog&&<AtRiskDrilldown title={atRiskDialog.title} associates={atRiskDialog.associates} onClose={()=>setAtRiskDialog(null)}/>}
+    {dialog&&<AssociateDialog title={dialog.title} associates={dialog.associates} onClose={()=>setDialog(null)}/>}{atRiskDialog&&<AtRiskDrilldown title={atRiskDialog.title} associates={atRiskDialog.associates} onClose={()=>setAtRiskDialog(null)}/>}{contDialog&&<AtRiskDrilldown title={contDialog.title} associates={contDialog.associates} onClose={()=>setContDialog(null)}/>}
     <h2 style={{color:"#f8fafc",fontSize:22,fontWeight:800,marginBottom:6}}>Dashboard</h2>
     <p style={{color:"#64748b",fontSize:14,marginBottom:28}}>Overview of tenure associates</p>
     <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:16,marginBottom:16}}>
       <StatCard label="Total Associates (unique)" value={stats.total} sub={"Rows: "+stats.headcount} accent="#38bdf8" icon={<Icon name="users" size={20}/>}/>
       <StatCard label="FTE Associates" value={(()=>{const ids=new Set(baseData.filter(r=>r.FTE_CON==="FTE").map(r=>String(r["Associate ID"]??"").trim()).filter(Boolean));return ids.size;})()}  sub={"Rows: "+baseData.filter(r=>r.FTE_CON==="FTE").length} accent="#4ade80" icon={<Icon name="check" size={20}/>}/>
-      <StatCard label="Contractors" value={(()=>{const ids=new Set(baseData.filter(r=>r.FTE_CON==="Cont").map(r=>String(r["Associate ID"]??"").trim()).filter(Boolean));return ids.size;})()}  sub={"Rows: "+baseData.filter(r=>r.FTE_CON==="Cont").length} accent="#fb923c" icon={<Icon name="clock" size={20}/>}/>
+      <div onClick={()=>stats.contRows.length&&setContDialog({title:"Contractors at Risk",associates:stats.contRows})} style={{cursor:stats.contRows.length?"pointer":"default"}}><StatCard label="Contractors at Risk" value={stats.contCount} sub={stats.contRows.length?"Rows: "+stats.contRows.length+" — Click to view":"None"} accent="#fb923c" icon={<Icon name="alert" size={20}/>}/></div>}/>
     </div>
     <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:16,marginBottom:28}}>
-      <div onClick={()=>stats.over12.length&&setAtRiskDialog({title:"At Risk - > 12 Months",associates:stats.over12})} style={{cursor:stats.over12.length?"pointer":"default"}}><StatCard label="At Risk > 12 months" value={stats.over12Count} sub={stats.over12.length?"Rows: "+stats.over12.length+" — Click to view":"None"} accent="#f87171" icon={<Icon name="alert" size={20}/>}/></div>
-      <div onClick={()=>stats.tenTo12.length&&setAtRiskDialog({title:"At Risk - 10 to 12 Months",associates:stats.tenTo12})} style={{cursor:stats.tenTo12.length?"pointer":"default"}}><StatCard label="At Risk 10-12 months" value={stats.tenTo12Count} sub={stats.tenTo12.length?"Rows: "+stats.tenTo12.length+" — Click to view":"None"} accent="#fb923c" icon={<Icon name="alert" size={20}/>}/></div>
-      <div onClick={()=>stats.eightTo10.length&&setAtRiskDialog({title:"At Risk - 8 to 10 Months",associates:stats.eightTo10})} style={{cursor:stats.eightTo10.length?"pointer":"default"}}><StatCard label="At Risk 8-10 months" value={stats.eightTo10Count} sub={stats.eightTo10.length?"Rows: "+stats.eightTo10.length+" — Click to view":"None"} accent="#a78bfa" icon={<Icon name="alert" size={20}/>}/></div>
+      <div onClick={()=>stats.over12.length&&setAtRiskDialog({title:"At Risk - > 12 Months",associates:stats.over12})} style={{cursor:stats.over12.length?"pointer":"default"}}><StatCard label="FTEs at risk > 12 months" value={stats.over12Count} sub={stats.over12.length?"Rows: "+stats.over12.length+" — Click to view":"None"} accent="#f87171" icon={<Icon name="alert" size={20}/>}/></div>
+      <div onClick={()=>stats.tenTo12.length&&setAtRiskDialog({title:"At Risk - 10 to 12 Months",associates:stats.tenTo12})} style={{cursor:stats.tenTo12.length?"pointer":"default"}}><StatCard label="FTEs at risk 10-12 months" value={stats.tenTo12Count} sub={stats.tenTo12.length?"Rows: "+stats.tenTo12.length+" — Click to view":"None"} accent="#fb923c" icon={<Icon name="alert" size={20}/>}/></div>
+      <div onClick={()=>stats.eightTo10.length&&setAtRiskDialog({title:"At Risk - 8 to 10 Months",associates:stats.eightTo10})} style={{cursor:stats.eightTo10.length?"pointer":"default"}}><StatCard label="FTEs at risk 8-10 months" value={stats.eightTo10Count} sub={stats.eightTo10.length?"Rows: "+stats.eightTo10.length+" — Click to view":"None"} accent="#a78bfa" icon={<Icon name="alert" size={20}/>}/></div>
     </div>
     
     <div style={{marginTop:20}}><TenureStatusPanel baseData={baseData}/></div>
@@ -1482,7 +1417,7 @@ const ALL_COLUMNS=[...ESA_COLUMNS,"FTE_CON","Month","Tenure","Portfolio Lead","E
 const HIDDEN_COLS=["Allocation Start Date"];
 const VISIBLE_COLUMNS=ALL_COLUMNS.filter(c=>!HIDDEN_COLS.includes(c));
 // ── Master Data storage helpers ─────────────────────────────────────────────
-const DEFAULT_EXEMPT_CATS = ["Exempted","Work in Progress","Release / Release in progress","Short Contract","To be replaced","Exclude","NGTS"];
+const DEFAULT_EXEMPT_CATS = ["Exempted","Work in Progress","Release / Release in progress","Short Contract","To be replaced","Replacement identified","IDC","Exclude","NGTS"];
 function lsExemptCatLoad(){
   try{
     const r=localStorage.getItem(LS_EXEMPTCAT_KEY);
@@ -1926,8 +1861,14 @@ const EXTRA_COLS=["Portfolio Lead","Exempted Category","Exempted Till","Revised 
 const EDITABLE_STYLE={padding:"3px 6px",background:"#0f172a",border:"1px solid #334155",borderRadius:4,color:"#e2e8f0",fontSize:11,width:"100%",outline:"none",boxSizing:"border-box"};
 
 function BaseDataTable({baseData}){
-  const [search,setSearch]=useState("");const [page,setPage]=useState(1);const [sortCol,setSortCol]=useState(null);const [sortDir,setSortDir]=useState("asc");
-  const [tf,setTf]=useState("All");const [ff,setFf]=useState("All");const PAGE_SIZE=20;
+  const [search,setSearch]=useState("");
+  const [page,setPage]=useState(1);
+  const [sortCol,setSortCol]=useState(null);
+  const [sortDir,setSortDir]=useState("asc");
+  const [colFilters,setColFilters]=useState({});
+  const [openFilter,setOpenFilter]=useState(null);
+  const [filterSearch,setFilterSearch]=useState({});
+  const PAGE_SIZE=20;
   const [extra,setExtra]=useState(()=>lsExtraLoad());
   const [plLeadsState,setPlLeadsState]=useState(()=>lsPortfolioLoad());
   const [exemptCatsState,setExemptCatsState]=useState(()=>lsExemptCatLoad());
@@ -1935,79 +1876,66 @@ function BaseDataTable({baseData}){
   const [bdSaveMsg,setBdSaveMsg]=useState(null);
   const [bdConfirmReset,setBdConfirmReset]=useState(false);
   const [bdResetting,setBdResetting]=useState(false);
+
+  // Close open filter on outside click
+  React.useEffect(()=>{
+    if(!openFilter) return;
+    const h=e=>{ if(!e.target.closest("th")) setOpenFilter(null); };
+    document.addEventListener("mousedown",h);
+    return()=>document.removeEventListener("mousedown",h);
+  },[openFilter]);
+
   const handleReset=async()=>{
-    setBdConfirmReset(false);
-    setBdResetting(true);setBdSaveMsg(null);
+    setBdConfirmReset(false);setBdResetting(true);setBdSaveMsg(null);
     try{
-      // Load original values from SharePoint
       const data=await paLoad();
       if(data&&data.rows&&data.rows.length){
-        // Rebuild extra from the saved rows (pick only extra cols)
         const freshExtra={};
         data.rows.forEach(r=>{
-          const id=String(r["Associate ID"]??"").trim();
-          if(!id)return;
-          const ex={};
-          EXTRA_COLS.forEach(col=>{ if(r[col]!==undefined&&r[col]!=="")ex[col]=r[col]; });
+          const id=String(r["Associate ID"]??"").trim();if(!id)return;
+          const ex={};EXTRA_COLS.forEach(col=>{if(r[col]!==undefined&&r[col]!=="")ex[col]=r[col];});
           if(Object.keys(ex).length)freshExtra[id]=ex;
         });
-        lsExtraSave(freshExtra);
-        setExtra(freshExtra);
+        lsExtraSave(freshExtra);setExtra(freshExtra);
         setBdSaveMsg({ok:true,text:"Reset to SharePoint values ("+data.rows.length+" records)"});
         window.__showAlert&&window.__showAlert("success","Base Data Reset","All editable fields have been reset to the values stored in SharePoint.",null,5000);
-      } else {
-        // No SP data — clear extra entirely (reset to blank)
-        lsExtraSave({});
-        setExtra({});
+      }else{
+        lsExtraSave({});setExtra({});
         setBdSaveMsg({ok:true,text:"Reset complete — editable fields cleared"});
         window.__showAlert&&window.__showAlert("success","Base Data Reset","Editable fields have been cleared.",null,5000);
       }
       setTimeout(()=>setBdSaveMsg(null),5000);
     }catch(e){
-      // SP unreachable — reset to blank as fallback
-      lsExtraSave({});
-      setExtra({});
+      lsExtraSave({});setExtra({});
       setBdSaveMsg({ok:true,text:"Reset complete (offline — editable fields cleared)"});
       window.__showAlert&&window.__showAlert("warning","Reset Complete (Offline)","Could not reach SharePoint. Editable fields have been cleared to blank values.",e.message);
       setTimeout(()=>setBdSaveMsg(null),5000);
-    }finally{
-      setBdResetting(false);
-    }
+    }finally{setBdResetting(false);}
   };
+
   const handleBaseDataSave=async()=>{
     if(!baseData.length||bdSaving)return;
     setBdSaving(true);setBdSaveMsg(null);
     try{
-      // Merge extra cols into each base row before saving
       const mergedRows=baseData.map(r=>{
-        const id=String(r["Associate ID"]??"").trim();
-        const ex=extra[id]||{};
-        return{
-          ...r,
-          "Portfolio Lead":ex["Portfolio Lead"]||"",
-          "Exempted Category":ex["Exempted Category"]||"",
-          "Exempted Till":ex["Exempted Till"]||"",
-          "Revised Tenure":ex["Revised Tenure"]||"",
-          "Email Approval":ex["Email Approval"]||"",
-          "Comments":ex["Comments"]||""
-        };
+        const id=String(r["Associate ID"]??"").trim();const ex=extra[id]||{};
+        return{...r,"Portfolio Lead":ex["Portfolio Lead"]||"","Exempted Category":ex["Exempted Category"]||"",
+          "Exempted Till":ex["Exempted Till"]||"","Revised Tenure":ex["Revised Tenure"]||"",
+          "Email Approval":ex["Email Approval"]||"","Comments":ex["Comments"]||""};
       });
-      await saveBaseDataToSharePoint(mergedRows, ()=>{});
+      await saveBaseDataToSharePoint(mergedRows,()=>{});
       setBdSaveMsg({ok:true,text:"Saved "+mergedRows.length+" records to SharePoint"});
       window.__showAlert&&window.__showAlert("success","Base Data Saved","All editable field changes have been saved to SharePoint.",null,5000);
       setTimeout(()=>setBdSaveMsg(null),5000);
     }catch(e){
       setBdSaveMsg({ok:false,text:"Save failed: "+e.message});
-      window.__showAlert&&window.__showAlert("error","Base Data Save Failed",e.message,"Go to Upload page and retry, or check your Power Automate flow is active.");
-    }finally{
-      setBdSaving(false);
-    }
+      window.__showAlert&&window.__showAlert("error","Base Data Save Failed",e.message,"Go to Upload page and retry.");
+    }finally{setBdSaving(false);}
   };
-  // Refresh master data from SharePoint on mount so dropdowns are always current
+
   useEffect(()=>{
-    loadPortfolioFromSP().then(leads=>{ if(leads.length) setPlLeadsState(leads); }).catch(()=>{});
-    loadExemptCatsFromSP().then(cats=>{ if(cats.length) setExemptCatsState(cats); }).catch(()=>{});
-    // Also listen for master data changes made in Admin page
+    loadPortfolioFromSP().then(leads=>{if(leads.length)setPlLeadsState(leads);}).catch(()=>{});
+    loadExemptCatsFromSP().then(cats=>{if(cats.length)setExemptCatsState(cats);}).catch(()=>{});
     const onStorage=(e)=>{
       if(e.key===LS_PORTFOLIO_KEY){const v=e.newValue;if(v)setPlLeadsState(JSON.parse(v));}
       if(e.key===LS_EXEMPTCAT_KEY){const v=e.newValue;if(v)setExemptCatsState(JSON.parse(v));}
@@ -2015,30 +1943,77 @@ function BaseDataTable({baseData}){
     window.addEventListener("storage",onStorage);
     return()=>window.removeEventListener("storage",onStorage);
   },[]);
+
   const getExtra=(id,col)=>(extra[id]?extra[id][col]||"":"");
   const setCell=(id,col,val)=>{
     const upd={...extra,[id]:{...(extra[id]||{}),[col]:val}};
     if(col==="Exempted Till"){upd[id]["Revised Tenure"]=deriveRevisedTenure(formatExemptedTill(val),extra[id]?.["orig_tenure"]||"");}
     lsExtraSave(upd);setExtra(upd);
   };
-  const merged=useMemo(()=>baseData.map(r=>{
-    const id=String(r["Associate ID"]??"").trim();
-    const ex=extra[id]||{};
-    const exemptedTill=formatExemptedTill(ex["Exempted Till"]||"");
-    const revisedTenure=exemptedTill?deriveRevisedTenure(exemptedTill,r.Tenure):(ex["Revised Tenure"]||"");
-    return{...r,"Portfolio Lead":ex["Portfolio Lead"]||"","Exempted Category":ex["Exempted Category"]||"","Exempted Till":exemptedTill,"Revised Tenure":revisedTenure,"Email Approval":ex["Email Approval"]||"","Comments":ex["Comments"]||""};
-  }),[baseData,extra]);
+
+  const merged=useMemo(()=>{
+    // Deduplicate by Associate ID; collect all project IDs/names; sum Total FTE
+    const map={};
+    baseData.forEach(r=>{
+      const id=String(r["Associate ID"]??"").trim();
+      if(!id) return;
+      if(!map[id]){
+        const ex=extra[id]||{};
+        const exemptedTill=formatExemptedTill(ex["Exempted Till"]||"");
+        const revisedTenure=exemptedTill?deriveRevisedTenure(exemptedTill,r.Tenure):(ex["Revised Tenure"]||"");
+        map[id]={...r,
+          "Portfolio Lead":ex["Portfolio Lead"]||"",
+          "Exempted Category":ex["Exempted Category"]||"",
+          "Exempted Till":exemptedTill,
+          "Revised Tenure":revisedTenure,
+          "Email Approval":ex["Email Approval"]||"",
+          "Comments":ex["Comments"]||"",
+          "Total FTE":0,
+          _projects:[]
+        };
+      }
+      // Take the max Total FTE across all allocations (capped at 1.0)
+      const rowFTE=parseFloat(String(r["Total FTE"]||"0").trim())||0;
+      map[id]["Total FTE"]=Math.min(1,Math.max(map[id]["Total FTE"],rowFTE));
+      // Collect unique project ID + name
+      const pid=String(r["Project Id"]||"").trim();
+      const pname=String(r["Project Name"]||"").trim();
+      if(pid||pname){
+        const exists=map[id]._projects.some(p=>p.id===pid&&p.name===pname);
+        if(!exists) map[id]._projects.push({id:pid,name:pname});
+      }
+    });
+    return Object.values(map);
+  },[baseData,extra]);
+
   const filtered=useMemo(()=>{
     let rows=merged;
     if(search){const q=search.toLowerCase();rows=rows.filter(r=>Object.values(r).some(v=>v?.toString().toLowerCase().includes(q)));}
-    if(tf!=="All")rows=rows.filter(r=>r.Tenure===tf);if(ff!=="All")rows=rows.filter(r=>r.FTE_CON===ff);
+    Object.entries(colFilters).forEach(([col,vals])=>{
+      if(vals&&vals.size>0) rows=rows.filter(r=>vals.has(String(r[col]??"")));
+    });
     if(sortCol)rows=[...rows].sort((a,b)=>{const av=a[sortCol]||"",bv=b[sortCol]||"";return sortDir==="asc"?av.localeCompare(bv):bv.localeCompare(av);});
     return rows;
-  },[merged,search,tf,ff,sortCol,sortDir]);
-  const pages=Math.ceil(filtered.length/PAGE_SIZE);const pd=filtered.slice((page-1)*PAGE_SIZE,page*PAGE_SIZE);
+  },[merged,search,colFilters,sortCol,sortDir]);
+
+  const pages=Math.ceil(filtered.length/PAGE_SIZE);
+  const pd=filtered.slice((page-1)*PAGE_SIZE,page*PAGE_SIZE);
   const tc={"<8 months":"#38bdf8","8 to 10 months":"#a78bfa","10 to 12 months":"#fb923c","> 12 months":"#f87171","Unknown":"#64748b"};
+  const hasActiveFilter=Object.values(colFilters).some(v=>v&&v.size>0);
+
+  // Build display columns: replace Project Id + Project Name with a single "Projects" column
+  const BDT_COLS=useMemo(()=>{
+    const cols=VISIBLE_COLUMNS.filter(c=>c!=="Project Id"&&c!=="Project Name");
+    const insertAt=cols.indexOf("Project Type");
+    if(insertAt>=0) cols.splice(insertAt,0,"Projects");
+    else cols.push("Projects");
+    return cols;
+  },[]);
+
   if(!baseData.length)return(<div style={{padding:"80px 36px",textAlign:"center"}}><div style={{color:"#334155",marginBottom:16}}><Icon name="table" size={48}/></div><div style={{color:"#475569",fontSize:18,fontWeight:600}}>No base data</div></div>);
+
   return(<div style={{padding:"32px 36px"}}>
+    {/* Top bar */}
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6,flexWrap:"wrap",gap:10}}>
       <div style={{display:"flex",alignItems:"center",gap:12}}>
         <h2 style={{color:"#f8fafc",fontSize:22,fontWeight:800}}>Base Data</h2>
@@ -2046,107 +2021,249 @@ function BaseDataTable({baseData}){
       </div>
       <div style={{display:"flex",alignItems:"center",gap:10}}>
         {bdSaveMsg&&(
-          <span style={{fontSize:12,fontWeight:600,color:bdSaveMsg.ok?"#4ade80":"#f87171",padding:"4px 10px",background:bdSaveMsg.ok?"#14532d33":"#7f1d1d33",borderRadius:6,border:"1px solid "+(bdSaveMsg.ok?"#16a34a44":"#dc262644")}}>
+          <span style={{fontSize:12,fontWeight:600,color:bdSaveMsg.ok?"#4ade80":"#f87171",padding:"4px 10px",
+            background:bdSaveMsg.ok?"#14532d33":"#7f1d1d33",borderRadius:6,
+            border:"1px solid "+(bdSaveMsg.ok?"#16a34a44":"#dc262644")}}>
             {bdSaveMsg.ok?"✓":"✗"} {bdSaveMsg.text}
           </span>
         )}
-        <button onClick={()=>setBdConfirmReset(true)} disabled={bdResetting||bdSaving||!baseData.length} style={{display:"flex",alignItems:"center",gap:6,padding:"8px 18px",borderRadius:8,fontSize:13,fontWeight:700,cursor:bdResetting||bdSaving||!baseData.length?"not-allowed":"pointer",background:"#f8717122",border:"1px solid #f87171",color:"#f87171",transition:"all 0.2s",opacity:!baseData.length?0.4:1}}>
-          {bdResetting
-            ? <><span style={{width:12,height:12,border:"2px solid #7f1d1d",borderTopColor:"#f87171",borderRadius:"50%",display:"inline-block",animation:"spin 0.8s linear infinite"}}/> Resetting...</>
-            : <><span style={{fontSize:14}}>&#8635;</span> Reset</>
-          }
+        <button onClick={()=>setBdConfirmReset(true)} disabled={bdResetting||bdSaving||!baseData.length}
+          style={{display:"flex",alignItems:"center",gap:6,padding:"8px 18px",borderRadius:8,fontSize:13,
+            fontWeight:700,cursor:bdResetting||bdSaving||!baseData.length?"not-allowed":"pointer",
+            background:"#f8717122",border:"1px solid #f87171",color:"#f87171",opacity:!baseData.length?0.4:1}}>
+          {bdResetting?<><span style={{width:12,height:12,border:"2px solid #7f1d1d",borderTopColor:"#f87171",borderRadius:"50%",display:"inline-block",animation:"spin 0.8s linear infinite"}}/> Resetting...</>:<><span style={{fontSize:14}}>&#8635;</span> Reset</>}
         </button>
-        <button onClick={handleBaseDataSave} disabled={bdSaving||!baseData.length} style={{display:"flex",alignItems:"center",gap:6,padding:"8px 18px",borderRadius:8,fontSize:13,fontWeight:700,cursor:bdSaving||!baseData.length?"not-allowed":"pointer",background:bdSaving?"#1e293b":"#a78bfa22",border:"1px solid "+(bdSaving?"#334155":"#a78bfa"),color:bdSaving?"#64748b":"#a78bfa",transition:"all 0.2s",opacity:!baseData.length?0.4:1}}>
-          {bdSaving
-            ? <><span style={{width:12,height:12,border:"2px solid #64748b",borderTopColor:"#a78bfa",borderRadius:"50%",display:"inline-block",animation:"spin 0.8s linear infinite"}}/> Saving...</>
-            : <><span style={{fontSize:15}}>&#128190;</span> Save Changes</>
-          }
+        <button onClick={handleBaseDataSave} disabled={bdSaving||!baseData.length}
+          style={{display:"flex",alignItems:"center",gap:6,padding:"8px 18px",borderRadius:8,fontSize:13,
+            fontWeight:700,cursor:bdSaving||!baseData.length?"not-allowed":"pointer",
+            background:bdSaving?"#1e293b":"#a78bfa22",border:"1px solid "+(bdSaving?"#334155":"#a78bfa"),
+            color:bdSaving?"#64748b":"#a78bfa",opacity:!baseData.length?0.4:1}}>
+          {bdSaving?<><span style={{width:12,height:12,border:"2px solid #64748b",borderTopColor:"#a78bfa",borderRadius:"50%",display:"inline-block",animation:"spin 0.8s linear infinite"}}/> Saving...</>:<><span style={{fontSize:15}}>&#128190;</span> Save Changes</>}
         </button>
       </div>
     </div>
-    <p style={{color:"#64748b",fontSize:14,marginBottom:20}}>All associate records with derived fields. Click cells under Portfolio Lead, Exempted Category, Exempted Till, and Email Approval to edit. Click <strong style={{color:"#a78bfa"}}>Save Changes</strong> to persist edits to SharePoint.</p>
-    <div style={{display:"flex",gap:12,marginBottom:20,flexWrap:"wrap"}}>
-      <div style={{position:"relative",flex:"1 1 240px"}}><span style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",color:"#475569"}}><Icon name="search" size={14}/></span><input value={search} onChange={e=>{setSearch(e.target.value);setPage(1);}} placeholder="Search all fields..." style={{width:"100%",paddingLeft:34,paddingRight:12,height:38,background:"#1e293b",border:"1px solid #334155",borderRadius:8,color:"#e2e8f0",fontSize:13,outline:"none",boxSizing:"border-box"}}/></div>
-      {["All","<8 months","8 to 10 months","10 to 12 months","> 12 months"].map(t=><button key={t} onClick={()=>{setTf(t);setPage(1);}} style={{padding:"6px 14px",borderRadius:7,fontSize:12,fontWeight:600,cursor:"pointer",background:tf===t?"#38bdf822":"#1e293b",border:`1px solid ${tf===t?"#38bdf8":"#334155"}`,color:tf===t?"#38bdf8":"#64748b"}}>{t}</button>)}
-      {["All","FTE","Cont"].map(t=><button key={t} onClick={()=>{setFf(t);setPage(1);}} style={{padding:"6px 14px",borderRadius:7,fontSize:12,fontWeight:600,cursor:"pointer",background:ff===t?"#a78bfa22":"#1e293b",border:`1px solid ${ff===t?"#a78bfa":"#334155"}`,color:ff===t?"#a78bfa":"#64748b"}}>{t}</button>)}
+    <p style={{color:"#64748b",fontSize:14,marginBottom:20}}>Click column headers to sort. Use the <strong style={{color:"#38bdf8"}}>&#x2263;</strong> icon on each column to filter by values. Click <strong style={{color:"#a78bfa"}}>Save Changes</strong> to persist edits.</p>
+
+    {/* Search + clear filters */}
+    <div style={{display:"flex",gap:12,marginBottom:16,alignItems:"center"}}>
+      <div style={{position:"relative",flex:"1 1 240px"}}>
+        <span style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",color:"#475569"}}><Icon name="search" size={14}/></span>
+        <input value={search} onChange={e=>{setSearch(e.target.value);setPage(1);}} placeholder="Search all fields..."
+          style={{width:"100%",paddingLeft:34,paddingRight:12,height:38,background:"#1e293b",border:"1px solid #334155",
+            borderRadius:8,color:"#e2e8f0",fontSize:13,outline:"none",boxSizing:"border-box"}}/>
+      </div>
+      {hasActiveFilter&&(
+        <button onClick={()=>{setColFilters({});setFilterSearch({});setPage(1);}}
+          style={{padding:"6px 14px",borderRadius:7,fontSize:12,fontWeight:600,cursor:"pointer",
+            background:"#f8717122",border:"1px solid #f87171",color:"#f87171",whiteSpace:"nowrap",flexShrink:0}}>
+          &#x2715; Clear All Filters
+        </button>
+      )}
     </div>
+
+    {/* Table */}
     <div style={{overflowX:"auto",borderRadius:10,border:"1px solid #1e293b"}}>
       <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-        <thead><tr style={{background:"#1e293b"}}>{VISIBLE_COLUMNS.map(col=><th key={col} onClick={()=>{if(sortCol===col)setSortDir(d=>d==="asc"?"desc":"asc");else{setSortCol(col);setSortDir("asc");}}} style={{padding:"10px 12px",textAlign:"left",color:EXTRA_COLS.includes(col)?"#a78bfa":"#94a3b8",fontWeight:700,fontSize:11,textTransform:"uppercase",letterSpacing:"0.06em",cursor:"pointer",whiteSpace:"nowrap",userSelect:"none",borderBottom:"1px solid #334155"}}>{col}{sortCol===col?(sortDir==="asc"?" &#8593;":" &#8595;"):""}{EXTRA_COLS.includes(col)&&col!=="Revised Tenure"?<span style={{fontSize:9,color:"#7c3aed",marginLeft:3}}>&#9998;</span>:null}</th>)}</tr></thead>
-        <tbody>{pd.map((row,i)=>{const id=String(row["Associate ID"]??"").trim();return(<tr key={i} style={{background:i%2===0?"#0f172a":"#111827",borderBottom:"1px solid #1e293b"}}>{VISIBLE_COLUMNS.map(col=>{
-          const isExtra=EXTRA_COLS.includes(col);
-          const isReadonly=col==="Revised Tenure";
-          const val=row[col]??"";
-          if(isExtra&&!isReadonly){
-            if(col==="Email Approval"){
-              return(<td key={col} style={{padding:"6px 8px",whiteSpace:"nowrap",minWidth:90}}>
-                <select value={val} onChange={e=>setCell(id,col,e.target.value)} style={{...EDITABLE_STYLE,width:80}}>
-                  <option value="">—</option><option value="Y">Y</option><option value="N">N</option>
-                </select>
-              </td>);
-            }
-            if(col==="Exempted Till"){
-              return(<td key={col} style={{padding:"6px 8px",whiteSpace:"nowrap",minWidth:90}}>
-                <ExemptedTillInput
-                  storedVal={val}
-                  onCommit={v=>setCell(id,col,v)}
-                  inputStyle={{...EDITABLE_STYLE,width:72}}
-                />
-              </td>);
-            }
-            if(col==="Exempted Category"){
-              return(<td key={col} style={{padding:"6px 8px",whiteSpace:"nowrap",minWidth:150}}>
-                <select value={val} onChange={e=>setCell(id,col,e.target.value)} style={{...EDITABLE_STYLE,width:148}}>
-                  {["",...exemptCatsState].map(c=><option key={c} value={c}>{c||"—"}</option>)}
-                </select>
-              </td>);
-            }
-            if(col==="Portfolio Lead"){
-              return(<td key={col} style={{padding:"6px 8px",whiteSpace:"nowrap",minWidth:180}}>
-                <select value={val} onChange={e=>setCell(id,col,e.target.value)} style={{...EDITABLE_STYLE,width:178}}>
-                  <option value="">—</option>
-                  {plLeadsState.filter(l=>l.id||l.name).map(l=>(
-                    <option key={l.id||l.name} value={l.id}>{l.name}{l.id?` (${l.id})`:""}</option>
-                  ))}
-                </select>
-              </td>);
-            }
-            if(col==="Comments"){
-              return(<td key={col} style={{padding:"6px 8px",minWidth:180,maxWidth:260}}>
-                <input value={val} onChange={e=>setCell(id,col,e.target.value)} placeholder="Add remarks..." style={{...EDITABLE_STYLE,width:"100%",minWidth:170}} />
-              </td>);
-            }
-            return(<td key={col} style={{padding:"6px 8px",whiteSpace:"nowrap",minWidth:120}}>
-              <input value={val} onChange={e=>setCell(id,col,e.target.value)} placeholder="—" style={{...EDITABLE_STYLE,width:120}} />
-            </td>);
-          }
-          if(col==="Tenure"||col==="Revised Tenure"){
-            const tenureVal=val;const tenureColor=tc[tenureVal]||"#64748b";
-            return(<td key={col} style={{padding:"9px 12px",whiteSpace:"nowrap"}}>
-              {tenureVal?<span style={{padding:"2px 8px",borderRadius:5,background:`${tenureColor}22`,color:tenureColor,fontSize:11,fontWeight:700}}>{tenureVal}</span>:<span style={{color:"#334155"}}>&#8212;</span>}
-            </td>);
-          }
-          if(col==="FTE_CON")return(<td key={col} style={{padding:"9px 12px",whiteSpace:"nowrap"}}><span style={{padding:"2px 8px",borderRadius:5,background:val==="FTE"?"#16a34a22":"#f9731622",color:val==="FTE"?"#4ade80":"#fb923c",fontSize:11,fontWeight:700}}>{val||"&#8212;"}</span></td>);
-          return(<td key={col} style={{padding:"9px 12px",color:"#cbd5e1",whiteSpace:"nowrap",maxWidth:160,overflow:"hidden",textOverflow:"ellipsis"}}>{val||"&#8212;"}</td>);
-        })}</tr>);})}{!pd.length&&<tr><td colSpan={ALL_COLUMNS.length} style={{padding:24,textAlign:"center",color:"#475569"}}>No matching records</td></tr>}</tbody>
+        <thead style={{position:"sticky",top:0,zIndex:3}}>
+          <tr style={{background:"#1e293b"}}>
+            {BDT_COLS.map(col=>{
+              const active=colFilters[col]&&colFilters[col].size>0;
+              const isOpen=openFilter===col;
+              const selected=colFilters[col]||new Set();
+              const colVals=col==="Projects"?[]:[...new Set(merged.map(r=>String(r[col]??"")).filter(v=>v!==""))].sort();
+              const fq=filterSearch[col]||"";
+              const shownVals=fq?colVals.filter(v=>v.toLowerCase().includes(fq.toLowerCase())):colVals;
+              return(
+                <th key={col} style={{padding:"8px 10px",textAlign:"left",fontWeight:700,fontSize:11,
+                  textTransform:"uppercase",letterSpacing:"0.05em",whiteSpace:"nowrap",
+                  position:"relative",background:"#1e293b",borderBottom:"1px solid #334155",
+                  color:active?"#38bdf8":EXTRA_COLS.includes(col)?"#a78bfa":"#94a3b8",userSelect:"none"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:4}}>
+                    <span onClick={()=>{if(sortCol===col)setSortDir(d=>d==="asc"?"desc":"asc");else{setSortCol(col);setSortDir("asc");}}}
+                      style={{cursor:"pointer",flex:1}}>
+                      {col}{sortCol===col?(sortDir==="asc"?" \u2191":" \u2193"):""}
+                    </span>
+                    <button onMouseDown={e=>{e.preventDefault();e.stopPropagation();
+                        setOpenFilter(isOpen?null:col);
+                        if(!isOpen)setFilterSearch(prev=>({...prev,[col]:""}));}}
+                      title={"Filter "+col}
+                      style={{flexShrink:0,width:18,height:18,padding:0,border:"none",
+                        background:active?"#38bdf833":"transparent",borderRadius:3,cursor:"pointer",
+                        color:active?"#38bdf8":"#475569",fontSize:11,display:"flex",
+                        alignItems:"center",justifyContent:"center",lineHeight:1}}>
+                      {active?"\u25bc":"\u2263"}
+                    </button>
+                  </div>
+                  {isOpen&&(
+                    <div style={{position:"absolute",top:"100%",left:0,zIndex:100,minWidth:190,maxWidth:280,
+                      background:"#1e293b",border:"1px solid #334155",borderRadius:8,
+                      boxShadow:"0 8px 24px rgba(0,0,0,0.7)",overflow:"hidden"}}
+                      onMouseDown={e=>e.stopPropagation()}>
+                      <div style={{padding:"8px 10px",borderBottom:"1px solid #334155",
+                        display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                        <span style={{color:"#94a3b8",fontSize:10,fontWeight:700,
+                          textTransform:"uppercase",letterSpacing:"0.05em"}}>{col}</span>
+                        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                          {selected.size>0&&<button onClick={()=>{setColFilters(prev=>({...prev,[col]:new Set()}));setPage(1);}}
+                            style={{fontSize:10,color:"#f87171",background:"transparent",border:"none",cursor:"pointer"}}>Clear</button>}
+                          <button onClick={()=>setOpenFilter(null)}
+                            style={{fontSize:13,color:"#475569",background:"transparent",border:"none",cursor:"pointer",lineHeight:1}}>&#x2715;</button>
+                        </div>
+                      </div>
+                      {colVals.length>8&&(
+                        <div style={{padding:"6px 10px",borderBottom:"1px solid #1e293b"}}>
+                          <input value={fq}
+                            onChange={e=>setFilterSearch(prev=>({...prev,[col]:e.target.value}))}
+                            placeholder="Search..." autoFocus
+                            style={{width:"100%",background:"#0f172a",border:"1px solid #334155",
+                              borderRadius:5,color:"#e2e8f0",fontSize:11,padding:"4px 8px",
+                              outline:"none",boxSizing:"border-box"}}/>
+                        </div>
+                      )}
+                      <div style={{maxHeight:200,overflowY:"auto"}}>
+                        {shownVals.map(v=>(
+                          <label key={v} style={{display:"flex",alignItems:"center",gap:8,
+                            padding:"6px 10px",cursor:"pointer",
+                            background:selected.has(v)?"#38bdf811":"transparent",
+                            borderBottom:"1px solid #0f172a"}}>
+                            <input type="checkbox" checked={selected.has(v)}
+                              onChange={()=>{
+                                const next=new Set(selected);
+                                if(next.has(v))next.delete(v);else next.add(v);
+                                setColFilters(prev=>({...prev,[col]:next}));
+                                setPage(1);
+                              }}
+                              style={{accentColor:"#38bdf8",cursor:"pointer",flexShrink:0}}/>
+                            <span style={{color:"#e2e8f0",fontSize:11,flex:1,
+                              overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{v||"\u2014"}</span>
+                          </label>
+                        ))}
+                        {shownVals.length===0&&<div style={{padding:10,color:"#475569",fontSize:11,textAlign:"center"}}>No values</div>}
+                      </div>
+                      {selected.size>0&&(
+                        <div style={{padding:"5px 10px",borderTop:"1px solid #334155",
+                          color:"#38bdf8",fontSize:10,textAlign:"center"}}>
+                          {selected.size} of {colVals.length} selected
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </th>
+              );
+            })}
+          </tr>
+        </thead>
+        <tbody>
+          {pd.map((row,i)=>{
+            const id=String(row["Associate ID"]??"").trim();
+            return(<tr key={i} style={{background:i%2===0?"#0f172a":"#111827",borderBottom:"1px solid #1e293b"}}>
+              {BDT_COLS.map(col=>{
+                const isExtra=EXTRA_COLS.includes(col);
+                  if(col==="Projects"){
+                    const projs=row._projects||[];
+                    return(<td key={col} style={{padding:"7px 10px",minWidth:180,maxWidth:280,verticalAlign:"top"}}>
+                      {projs.length===0?<span style={{color:"#334155"}}>&#8212;</span>:
+                        <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                          {projs.map((p,pi)=>(
+                            <div key={pi} style={{fontSize:11,lineHeight:1.4}}>
+                              <span style={{color:"#e2e8f0",fontWeight:600}}>{p.name||"—"}</span>
+                              {p.id&&<span style={{color:"#475569",marginLeft:4,fontSize:10}}>({p.id})</span>}
+                            </div>
+                          ))}
+                        </div>
+                      }
+                    </td>);
+                  }
+                const isReadonly=col==="Revised Tenure";
+                const val=row[col]??"";
+                if(isExtra&&!isReadonly){
+                  if(col==="Email Approval"){
+                    return(<td key={col} style={{padding:"6px 8px",whiteSpace:"nowrap",minWidth:90}}>
+                      <select value={val} onChange={e=>setCell(id,col,e.target.value)} style={{...EDITABLE_STYLE,width:80}}>
+                        <option value="">—</option><option value="Y">Y</option><option value="N">N</option>
+                      </select>
+                    </td>);
+                  }
+                  if(col==="Exempted Till"){
+                    return(<td key={col} style={{padding:"6px 8px",whiteSpace:"nowrap",minWidth:100}}>
+                      <ExemptedTillInput storedVal={val} onCommit={v=>setCell(id,col,v)} inputStyle={{...EDITABLE_STYLE,width:72}}/>
+                    </td>);
+                  }
+                  if(col==="Exempted Category"){
+                    return(<td key={col} style={{padding:"6px 8px",whiteSpace:"nowrap",minWidth:150}}>
+                      <select value={val} onChange={e=>setCell(id,col,e.target.value)} style={{...EDITABLE_STYLE,width:148}}>
+                        {["", ...exemptCatsState].map(c=><option key={c} value={c}>{c||"—"}</option>)}
+                      </select>
+                    </td>);
+                  }
+                  if(col==="Portfolio Lead"){
+                    return(<td key={col} style={{padding:"6px 8px",whiteSpace:"nowrap",minWidth:180}}>
+                      <select value={val} onChange={e=>setCell(id,col,e.target.value)} style={{...EDITABLE_STYLE,width:178}}>
+                        <option value="">—</option>
+                        {plLeadsState.filter(l=>l.id||l.name).map(l=>(
+                          <option key={l.id||l.name} value={l.id}>{l.name}{l.id?` (${l.id})`:""}</option>
+                        ))}
+                      </select>
+                    </td>);
+                  }
+                  if(col==="Comments"){
+                    return(<td key={col} style={{padding:"6px 8px",minWidth:180,maxWidth:260}}>
+                      <input value={val} onChange={e=>setCell(id,col,e.target.value)}
+                        placeholder="Add remarks..." style={{...EDITABLE_STYLE,width:"100%",minWidth:170}}/>
+                    </td>);
+                  }
+                  return(<td key={col} style={{padding:"6px 8px",whiteSpace:"nowrap",minWidth:120}}>
+                    <input value={val} onChange={e=>setCell(id,col,e.target.value)} placeholder="—" style={{...EDITABLE_STYLE,width:120}}/>
+                  </td>);
+                }
+                if(col==="Tenure"||col==="Revised Tenure"){
+                  const tenureColor=tc[val]||"#64748b";
+                  return(<td key={col} style={{padding:"9px 12px",whiteSpace:"nowrap"}}>
+                    {val?<span style={{padding:"2px 8px",borderRadius:5,background:tenureColor+"22",color:tenureColor,fontSize:11,fontWeight:700}}>{val}</span>:<span style={{color:"#334155"}}>&#8212;</span>}
+                  </td>);
+                }
+                if(col==="FTE_CON")return(<td key={col} style={{padding:"9px 12px",whiteSpace:"nowrap"}}><span style={{padding:"2px 8px",borderRadius:5,background:val==="FTE"?"#16a34a22":"#f9731622",color:val==="FTE"?"#4ade80":"#fb923c",fontSize:11,fontWeight:700}}>{val||"&#8212;"}</span></td>);
+                return(<td key={col} style={{padding:"9px 12px",color:"#cbd5e1",whiteSpace:"nowrap",maxWidth:160,overflow:"hidden",textOverflow:"ellipsis"}}>{val||"&#8212;"}</td>);
+              })}
+            </tr>);
+          })}
+          {!pd.length&&<tr><td colSpan={BDT_COLS.length} style={{padding:24,textAlign:"center",color:"#475569"}}>No matching records</td></tr>}
+        </tbody>
       </table>
     </div>
+
+    {/* Confirm reset dialog */}
     {bdConfirmReset&&(
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center"}}>
-      <div style={{background:"#1e293b",border:"1px solid #dc2626",borderRadius:14,padding:"28px 32px",maxWidth:440,width:"90%",boxShadow:"0 8px 32px rgba(0,0,0,0.6)"}}>
-        <div style={{fontSize:18,fontWeight:800,color:"#f8fafc",marginBottom:8}}>&#8635; Reset Editable Fields?</div>
-        <div style={{color:"#94a3b8",fontSize:13,lineHeight:1.6,marginBottom:20}}>
-          This will restore all editable fields (Portfolio Lead, Exempted Category, Exempted Till, Email Approval) to the values currently saved in SharePoint.<br/><br/>
-          <strong style={{color:"#fbbf24"}}>Any unsaved changes will be lost.</strong>
-        </div>
-        <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
-          <button onClick={()=>setBdConfirmReset(false)} style={{padding:"8px 20px",borderRadius:8,border:"1px solid #334155",background:"transparent",color:"#94a3b8",fontSize:13,fontWeight:600,cursor:"pointer"}}>Cancel</button>
-          <button onClick={handleReset} style={{padding:"8px 20px",borderRadius:8,border:"1px solid #dc2626",background:"#7f1d1d33",color:"#f87171",fontSize:13,fontWeight:700,cursor:"pointer"}}>Yes, Reset</button>
+      <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center"}}>
+        <div style={{background:"#1e293b",border:"1px solid #dc2626",borderRadius:14,padding:"28px 32px",maxWidth:440,width:"90%"}}>
+          <div style={{fontSize:18,fontWeight:800,color:"#f8fafc",marginBottom:8}}>&#8635; Reset Editable Fields?</div>
+          <div style={{color:"#94a3b8",fontSize:13,lineHeight:1.6,marginBottom:20}}>
+            This will restore all editable fields to the values currently saved in SharePoint.<br/><br/>
+            <strong style={{color:"#fbbf24"}}>Any unsaved changes will be lost.</strong>
+          </div>
+          <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
+            <button onClick={()=>setBdConfirmReset(false)} style={{padding:"8px 20px",borderRadius:8,border:"1px solid #334155",background:"transparent",color:"#94a3b8",fontSize:13,fontWeight:600,cursor:"pointer"}}>Cancel</button>
+            <button onClick={handleReset} style={{padding:"8px 20px",borderRadius:8,border:"1px solid #dc2626",background:"#7f1d1d33",color:"#f87171",fontSize:13,fontWeight:700,cursor:"pointer"}}>Yes, Reset</button>
+          </div>
         </div>
       </div>
-    </div>
-  )}
-  {pages>1&&<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginTop:16}}><span style={{color:"#475569",fontSize:13}}>Page {page} of {pages}</span><div style={{display:"flex",gap:6}}><button onClick={()=>setPage(p=>Math.max(1,p-1))} disabled={page===1} style={{padding:"6px 14px",borderRadius:7,background:"#1e293b",border:"1px solid #334155",color:page===1?"#334155":"#94a3b8",cursor:page===1?"default":"pointer",fontSize:13}}>&#8592; Prev</button>{Array.from({length:Math.min(5,pages)},(_,i)=>{const p=Math.max(1,Math.min(page-2,pages-4))+i;return(<button key={p} onClick={()=>setPage(p)} style={{padding:"6px 12px",borderRadius:7,fontSize:13,cursor:"pointer",background:page===p?"#38bdf822":"#1e293b",border:`1px solid ${page===p?"#38bdf8":"#334155"}`,color:page===p?"#38bdf8":"#64748b"}}>{p}</button>);})}<button onClick={()=>setPage(p=>Math.min(pages,p+1))} disabled={page===pages} style={{padding:"6px 14px",borderRadius:7,background:"#1e293b",border:"1px solid #334155",color:page===pages?"#334155":"#94a3b8",cursor:page===pages?"default":"pointer",fontSize:13}}>Next &#8594;</button></div></div>}
+    )}
+
+    {/* Pagination */}
+    {pages>1&&<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginTop:16}}>
+      <span style={{color:"#475569",fontSize:13}}>Page {page} of {pages}</span>
+      <div style={{display:"flex",gap:6}}>
+        <button onClick={()=>setPage(p=>Math.max(1,p-1))} disabled={page===1}
+          style={{padding:"6px 14px",borderRadius:7,background:"#1e293b",border:"1px solid #334155",color:page===1?"#334155":"#94a3b8",cursor:page===1?"default":"pointer",fontSize:13}}>&#8592; Prev</button>
+        {Array.from({length:Math.min(5,pages)},(_,i)=>{const p=Math.max(1,Math.min(page-2,pages-4))+i;return(
+          <button key={p} onClick={()=>setPage(p)} style={{padding:"6px 12px",borderRadius:7,fontSize:13,cursor:"pointer",
+            background:page===p?"#38bdf822":"#1e293b",border:"1px solid "+(page===p?"#38bdf8":"#334155"),
+            color:page===p?"#38bdf8":"#64748b"}}>{p}</button>
+        );})}
+        <button onClick={()=>setPage(p=>Math.min(pages,p+1))} disabled={page===pages}
+          style={{padding:"6px 14px",borderRadius:7,background:"#1e293b",border:"1px solid #334155",color:page===pages?"#334155":"#94a3b8",cursor:page===pages?"default":"pointer",fontSize:13}}>Next &#8594;</button>
+      </div>
+    </div>}
   </div>);
 }
 
@@ -2186,11 +2303,15 @@ function PADiagnostic() {
   );
 }
 
-function UploadPanel({esaData,utilData,utilLookup,onESAUpload,onUtilUpload,showAlert=()=>{}}){
+function UploadPanel({esaData,utilData,utilLookup,onESAUpload,onUtilUpload,showAlert=()=>{},releasedAssocs=[],setReleasedAssocs=()=>{},releasedLoading=false,setReleasedLoading=()=>{}}){
   const [esaDrag,setEsaDrag]=useState(false);const [utilDrag,setUtilDrag]=useState(false);
   const [esaStatus,setEsaStatus]=useState(null);const [utilStatus,setUtilStatus]=useState(null);const [utilLoading,setUtilLoading]=useState(false);
+  // releasedAssocs and releasedLoading come from App props (survive re-renders)
   const handleFile=async(file,type)=>{
     if(!file)return;
+    // Snapshot existing base data IMMEDIATELY before any async ops
+    const _preUploadCache=lsLoad();
+    const _preUploadRows=(_preUploadCache&&_preUploadCache.rows&&_preUploadCache.rows.length)?_preUploadCache.rows:[];
     if(type==="esa"){
       const allRows=parseCSV(await file.text());
       const norm=s=>s.toLowerCase().replace(/[\s_]/g,"");
@@ -2208,8 +2329,36 @@ function UploadPanel({esaData,utilData,utilLookup,onESAUpload,onUtilUpload,showA
         return true;
       });
       const excl=allRows.length-rows.length;
+      // Detect released associates synchronously from localStorage cache
+      const newIdKey=rows.length?Object.keys(rows[0]).find(k=>norm(k)===norm("AssociateID"))||"Associate ID":"Associate ID";
+      const newIds=new Set(rows.map(r=>String(r[newIdKey]||"").trim().toLowerCase()).filter(Boolean));
+      // Use the pre-upload snapshot (before onESAUpload overwrites localStorage)
+      const existingRows=_preUploadRows;
+      const _dbg="[pre:"+existingRows.length+" rows, newPRISM:"+newIds.size+" ids]";
+      const seenReleased=new Set();
+      const released=[];
+      existingRows.forEach(r=>{
+        const eid=String(r["Associate ID"]||"").trim();
+        if(!eid||seenReleased.has(eid.toLowerCase())) return;
+        if(!newIds.has(eid.toLowerCase())){
+          seenReleased.add(eid.toLowerCase());
+          released.push({
+            id:eid,
+            name:r["Associate Name"]||"",
+            grade:r["Grade Name"]||"",
+            billability:r["Project Billability"]||"",
+            projectId:r["Project Id"]||"",
+            projectName:r["Project Name"]||"",
+            practice:r["Practice Area"]||"",
+            tenure:r["Tenure"]||""
+          });
+        }
+      });
+      setReleasedAssocs(released);
+      setReleasedLoading(false);
       onESAUpload(rows);
-      setEsaStatus({ok:true,msg:"Loaded "+rows.length+" records from "+file.name+(excl>0?" ("+excl+" excluded — non-Walmart or NBL)":"")});
+      const relMsg=released.length>0?" | "+released.length+" released associate(s) — see below":" | No releases detected";
+      setEsaStatus({ok:true,msg:"Loaded "+rows.length+" records from "+file.name+(excl>0?" ("+excl+" excluded — non-Walmart or NBL)":"")+relMsg+" "+_dbg});
     }else{
       const ext=file.name.split(".").pop().toLowerCase();
       if(!["csv","xls","xlsx"].includes(ext)){setUtilStatus({ok:false,msg:"Unsupported format ."+ext});return;}
@@ -2241,6 +2390,43 @@ function UploadPanel({esaData,utilData,utilLookup,onESAUpload,onUtilUpload,showA
       <div><div style={{color:"#94a3b8",fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:12}}>Step 1 — ESA Prism Dump</div><DropZone type="esa" drag={esaDrag} setDrag={setEsaDrag} status={esaStatus} label="ESA Prism Dump" desc="CSV file with associate base data." color="#38bdf8"/>{esaData.length>0&&<div style={{marginTop:12,color:"#38bdf8",fontSize:13,fontWeight:600}}>✓ {esaData.length} associates loaded</div>}</div>
       <div><div style={{color:"#94a3b8",fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:12}}>Step 2 — Utilization Dump (2025)</div><DropZone type="util" drag={utilDrag} setDrag={setUtilDrag} status={utilStatus} label="Utilization Dump" desc="CSV, XLS or XLSX with Associate ID and Month." color="#a78bfa"/>{utilData.length>0&&<div style={{marginTop:12,color:"#a78bfa",fontSize:13,fontWeight:600}}>{utilStatus?"✓ "+utilData.length+" utilization records loaded from file":"✓ "+utilData.length+" utilization records (from saved session — re-upload to refresh)"}</div>}</div>
     </div>
+    {releasedAssocs.length>0&&(
+      <div style={{marginTop:28,padding:"0 0 8px"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
+          <div style={{width:8,height:8,borderRadius:"50%",background:"#f87171",flexShrink:0}}/>
+          <h3 style={{color:"#f87171",fontSize:14,fontWeight:800,margin:0}}>Released Associates — Not in New Upload</h3>
+          <span style={{color:"#475569",fontSize:12}}>{releasedAssocs.length+" associate(s) present in base data but absent from this ESA file — likely released from the account"}</span>
+          <button onClick={()=>setReleasedAssocs([])} style={{marginLeft:"auto",padding:"4px 12px",borderRadius:6,border:"1px solid #334155",background:"transparent",color:"#64748b",fontSize:11,cursor:"pointer"}}>Dismiss</button>
+        </div>
+        <div style={{overflowX:"auto",borderRadius:8,border:"1px solid #f8717133"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+            <thead>
+              <tr style={{background:"#1c0a0a"}}>
+                {["Associate ID","Associate Name","Grade","Billability","Practice Area","Project ID","Project Name","Tenure"].map(h=>(
+                  <th key={h} style={{padding:"8px 12px",textAlign:"left",color:"#f87171",fontWeight:700,fontSize:10,textTransform:"uppercase",letterSpacing:"0.06em",borderBottom:"1px solid #f8717133",whiteSpace:"nowrap"}}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {releasedAssocs.map((a,i)=>(
+                <tr key={a.id} style={{background:i%2===0?"#0f0505":"#120707",borderBottom:"1px solid #f8717122"}}>
+                  <td style={{padding:"7px 12px",color:"#fca5a5",fontWeight:600,whiteSpace:"nowrap"}}>{a.id}</td>
+                  <td style={{padding:"7px 12px",color:"#e2e8f0",whiteSpace:"nowrap"}}>{a.name}</td>
+                  <td style={{padding:"7px 12px",color:"#94a3b8",whiteSpace:"nowrap"}}>{a.grade}</td>
+                  <td style={{padding:"7px 12px",color:"#94a3b8",whiteSpace:"nowrap"}}>{a.billability}</td>
+                  <td style={{padding:"7px 12px",color:"#94a3b8",whiteSpace:"nowrap"}}>{a.practice}</td>
+                  <td style={{padding:"7px 12px",color:"#64748b",whiteSpace:"nowrap",fontSize:10}}>{a.projectId}</td>
+                  <td style={{padding:"7px 12px",color:"#94a3b8",whiteSpace:"nowrap",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis"}}>{a.projectName}</td>
+                  <td style={{padding:"7px 12px",whiteSpace:"nowrap"}}>
+                    {a.tenure&&<span style={{padding:"2px 8px",borderRadius:5,fontSize:10,fontWeight:700,background:{"<8 months":"#38bdf822","8 to 10 months":"#a78bfa22","10 to 12 months":"#fb923c22","> 12 months":"#f8717122"}[a.tenure]||"#64748b22",color:{"<8 months":"#38bdf8","8 to 10 months":"#a78bfa","10 to 12 months":"#fb923c","> 12 months":"#f87171"}[a.tenure]||"#64748b"}}>{a.tenure}</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )}
   </div>);
 }
 
@@ -2479,6 +2665,8 @@ function GlobalAlert({alerts, onDismiss}) {
 function App(){
   const [activeNav,setActiveNav]=useState("dashboard");
   const [esaRaw,setEsaRaw]=useState([]);const [utilRaw,setUtilRaw]=useState(()=>lsUtilLoad());
+  const [releasedAssocs,setReleasedAssocs]=useState([]);
+  const [releasedLoading,setReleasedLoading]=useState(false);
   const [globalAlerts,setGlobalAlerts]=useState([]);
   const alertIdRef=useRef(0);
   const showAlert=useCallback((type,title,message,action=null,autoDismiss=null)=>{
@@ -2577,7 +2765,7 @@ function App(){
         {baseData.length>0&&<div style={{padding:"4px 12px",borderRadius:20,background:"#14532d33",border:"1px solid #16a34a44",color:"#4ade80",fontSize:11,fontWeight:700}}>{baseData.length} associates loaded</div>}
         <div style={{color:"#334155",fontSize:12}}>{new Date().toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric",year:"numeric"})}</div>
       </div>
-      {activeNav==="upload"&&(<><UploadPanel esaData={esaRaw} utilData={utilRaw} utilLookup={utilLookup} onESAUpload={setEsaRaw} onUtilUpload={setUtilRaw} showAlert={showAlert}/><div style={{padding:"0 36px 36px"}}><SharePointSyncPanel baseData={baseData} onLoadFromSP={handleLoadFromSP} showAlert={showAlert}/></div></>)}
+      {activeNav==="upload"&&(<><UploadPanel esaData={esaRaw} utilData={utilRaw} utilLookup={utilLookup} onESAUpload={setEsaRaw} onUtilUpload={setUtilRaw} showAlert={showAlert} releasedAssocs={releasedAssocs} setReleasedAssocs={setReleasedAssocs} releasedLoading={releasedLoading} setReleasedLoading={setReleasedLoading}/><div style={{padding:"0 36px 36px"}}><SharePointSyncPanel baseData={baseData} onLoadFromSP={handleLoadFromSP} showAlert={showAlert}/></div></>)}
       {activeNav==="dashboard"&&<Dashboard baseData={baseData}/>}
       {activeNav==="data"&&<BaseDataTable baseData={baseData}/>}
       {activeNav==="admin"&&<AdminMasterData/>}
@@ -2586,5 +2774,67 @@ function App(){
 
 ReactDOM.render(React.createElement(App), document.getElementById("root"));
   </script>
+
+<script id="tt-patch-tbr">
+(function(){
+  try {
+    var DONE_KEY = 'tenuretrack_patch_tbr_v1';
+    if(localStorage.getItem(DONE_KEY)) return; // already applied
+    var LS_EXTRA_KEY = 'tenuretrack_extra_v1';
+    var raw = localStorage.getItem(LS_EXTRA_KEY);
+    var extra = raw ? JSON.parse(raw) : {};
+    var updates = {"2371873": "Replacement identified", "2240292": "Replacement identified", "728814": "Replacement identified", "924706": "Replacement identified", "2230200": "Replacement identified", "677628": "Replacement identified", "2297447": "Replacement identified", "2049701": "Replacement identified", "2043953": "Replacement identified", "801666": "Replacement identified", "196249": "To be replaced", "813563": "To be replaced", "220027": "To be replaced", "651983": "To be replaced", "168624": "To be replaced", "198127": "To be replaced", "2368455": "To be replaced", "792470": "To be replaced", "2146931": "To be replaced", "425907": "To be replaced", "2305430": "Replacement identified", "2305660": "Replacement identified", "2314177": "Replacement identified", "482611": "Replacement identified", "2392194": "Replacement identified", "654881": "To be replaced", "2373744": "Replacement identified", "2404957": "To be replaced", "139975": "Replacement identified", "2283964": "To be replaced", "2368196": "To be replaced", "2373629": "To be replaced", "885901": "To be replaced", "2052732": "To be replaced", "2174253": "Replacement identified", "2193217": "Replacement identified", "2195747": "Replacement identified", "2213429": "Replacement identified", "2222184": "Replacement identified", "2244021": "To be replaced", "2255290": "Replacement identified", "2300976": "Replacement identified", "2304882": "To be replaced", "2319739": "To be replaced", "2333009": "To be replaced", "367835": "To be replaced", "613340": "Replacement identified", "2331249": "To be replaced", "206534": "To be replaced", "2343119": "To be replaced", "242418": "To be replaced", "2398714": "Replacement identified", "2413971": "To be replaced", "2419648": "To be replaced", "2456545": "Replacement identified", "277831": "To be replaced", "563328": "To be replaced", "196303": "To be replaced", "312570": "To be replaced", "191963": "To be replaced", "2402365": "To be replaced", "2242714": "To be replaced", "802937": "To be replaced", "2405721": "To be replaced", "2407585": "To be replaced", "177779": "To be replaced", "187456": "To be replaced", "206114": "To be replaced", "518538": "To be replaced", "2200409": "To be replaced", "2181611": "To be replaced", "2332273": "To be replaced", "2399628": "To be replaced", "2412717": "To be replaced", "2413010": "To be replaced", "2442929": "To be replaced", "440195": "To be replaced", "2302597": "To be replaced", "2311648": "To be replaced", "2376900": "To be replaced", "435041": "To be replaced", "786555": "To be replaced", "2263675": "To be replaced"};
+    Object.keys(updates).forEach(function(id){
+      if(!extra[id]) extra[id] = {};
+      extra[id]['Exempted Category'] = updates[id];
+    });
+    localStorage.setItem(LS_EXTRA_KEY, JSON.stringify(extra));
+    localStorage.setItem(DONE_KEY, '1');
+    console.log('[TenureTrack patch] Applied ' + Object.keys(updates).length + ' category updates to localStorage');
+  } catch(e) {
+    console.error('[TenureTrack patch] Failed:', e);
+  }
+})();
+</script>
+
+
+<script id="tt-patch-v2">
+(function(){
+  try {
+    var DONE_KEY = 'tenuretrack_patch_v2';
+    if(localStorage.getItem(DONE_KEY)) return;
+    var LS_EXTRA_KEY = 'tenuretrack_extra_v1';
+    var raw = localStorage.getItem(LS_EXTRA_KEY);
+    var extra = raw ? JSON.parse(raw) : {};
+
+    // 1. Change 'Work in Progress' → 'Exempted' for any existing records
+    var wipCount = 0;
+    Object.keys(extra).forEach(function(id){
+      if(extra[id]['Exempted Category'] === 'Work in Progress'){
+        extra[id]['Exempted Category'] = 'Exempted';
+        wipCount++;
+      }
+    });
+
+    // 2. Set 'IDC' for IDC-customer associates with blank Exempted Category
+    var idcIds = ["2199513", "2392299", "2391405", "748505", "2401518", "2076264", "559537", "2402084", "2335070", "2448468", "2116642", "2218597", "2072748", "841000", "2173640", "2418590", "2383066", "2128487", "2265850", "844136", "2406229", "2465031", "2072159", "2356670", "2307042", "2451994", "2302527", "2241809", "2056603", "2130598", "2462141", "2057316", "2109675", "224749", "2437079", "2187255", "2402106", "2424679", "2163375", "2162516", "2448790", "2346372", "2406844", "2241734", "2413132", "269067", "2159914", "2451953", "2267244", "2306086", "2477661", "2302521", "2439788", "2424202", "2233826", "2310992", "2341891", "2059515", "2458481", "2404993", "579994", "2220620", "2062102", "2398005", "2198933", "2365730", "2298248", "2457471", "2236954", "2428928", "2023489", "2422599", "2440044", "2465805", "2392487", "2224033", "315418", "414624", "2440026", "2226835", "2327671", "2118506", "2462139", "2457900", "2090513", "551059", "2397908", "2352472", "2470672", "2072047", "2324605", "2213042", "2413160", "2383780", "209500", "2255264", "2224722", "2467879", "2304559", "2008723", "2276056", "2397762", "2422355", "2174810", "2174385", "2451838", "2406353", "2393731", "683473", "2015195", "2044731", "2332287", "2216794", "2428927", "2199822", "2115314", "2464689", "2363073", "2306543", "2130700", "2301267", "2406707", "2154791", "911645", "2307127", "2340846", "2470176", "2452198", "2469148", "2057608", "604417", "2038399", "2197225", "748238", "2426457", "2413380", "2429131", "2023905", "2299226", "2451897", "2426152", "2229277", "2390929", "2161668", "2202468", "2356449", "2210972", "2205814", "2434719", "2414165", "2330808", "2249666", "2374879", "2068701", "2228078", "2439790", "2213032", "2088949", "2424201", "2382728", "2431907", "2235753", "2428110", "917734", "2321585", "916735", "2071344", "2326496", "2312194", "2339715", "2185886", "2379668", "2177436", "2133911", "711767", "583596", "2094318", "2298637", "2248526", "2462335", "2396677", "2335459", "2233917", "2440435", "511159", "2445928", "273109", "2304589", "2414940", "2426516", "2315185", "2486433", "467297", "2299229", "2314946", "2154906", "2241730", "2258097", "848807", "2394839", "2463756", "713061", "2413919", "2386456", "2267237", "860416", "2414090", "2398053", "2334728", "2459432", "2466984", "2351662", "2349029", "2334360", "2451884", "2462223", "626158", "2092054", "2375438", "2102468", "2098225", "2403100", "2400393", "2330001", "2452965", "2363261", "2415091", "2304624", "651024", "2363127", "2465799", "2206651", "265498", "2445509", "2390050", "2469261", "2384558", "2175377", "2067588", "2323203", "2437317", "2357603", "2452186", "2452153", "2426722", "2462149", "2238467", "2365814", "2067838", "2249989", "2357067", "2214600", "2137767", "2331917", "2446543", "2200029", "2411052", "2345934", "2463964", "2239554", "2019623", "2182312", "2303288", "2459434", "2180423", "2317240", "2234796", "2205433", "2339560", "2124328", "2466292", "2164018", "945398", "2457451", "2428113", "2442280", "2447027", "2201000", "2439784", "2344280", "2347986", "2403243", "761534", "2463758", "2249662", "2214719", "2368161", "439525", "2458319", "2154850", "2352074", "2415310", "493947", "2027381", "2459313", "2415127", "2221597", "2462338", "2317878", "2414657", "2243786", "2059120", "2356743", "2210834", "2393498", "2242595", "2335211", "2465723", "2356916", "2078560", "2185747", "2328906", "650589", "2424045", "2430074", "2174407", "487846", "2469598", "2074036", "2383776", "239889", "817396", "2227022", "2306541", "2363115", "2403294", "2210735", "2192982", "2222229", "726551", "2293809", "2465616", "470206", "934978", "2465030", "728582", "2195846", "2170770", "2419077", "2420275", "2441566", "2428398", "2458140", "2244580", "2345303", "619052", "690330", "2176978", "748576", "2458092", "2373412", "2356797", "2484981", "2421981", "2431739", "2398131", "2140117", "2313049", "2087242", "2396456", "2327074", "2234142", "2428784", "2392617", "2406649", "2345936", "2372059", "2338658", "2269755", "2066838", "2381830", "2238590", "592228", "249634", "2227066", "2427938", "2110224", "2359101", "2463919", "2085941", "2391888", "2332558", "2358413", "904664", "941246", "2101158", "920166", "2478260", "2373411", "2418260", "2093154", "2428641", "2409356", "592283", "2114218", "2165354", "2464790", "2435517", "2223281", "2104156", "594921", "2197856", "313789", "2413134", "2434033", "871824", "226823", "2465891", "885012", "2462140", "2428306", "2152770", "2388509", "2308712", "2378194", "2411128", "890814", "842174", "123552", "2415192", "2408058", "2346438", "367548", "2076703", "2273627", "2418800", "2378839", "2433481", "939813", "2382522", "2463940", "2425928", "2172824", "2407110", "2441930", "733994", "2411429", "2102542", "2128983", "2174226", "2444771", "2451851", "2435648", "2407101", "2442341", "2271130", "2049926", "2426679", "2128346", "2432561", "2403128", "2144686", "2405709", "2433601", "2431848", "2442336", "2437350", "376452", "2442279", "721877", "2340526", "2362781", "837474", "2446489", "2177443", "2431850", "2238198", "2429264", "2436802", "2464812", "2442338", "2208647", "200816", "719406", "2026748", "2431849", "853216", "2400402", "2428793", "2417734", "2399251", "485365", "949606", "2200651", "2435862", "2431723", "2410169", "2230865", "2409723", "2124167", "2316296", "2420271", "2445243", "2247022", "2431847", "2150031", "2433173", "2421833", "2408865", "2442880", "2408960", "2428849", "841555", "2438139", "2433139", "640120", "2441846", "2031686", "2166087", "2447711", "2437151", "573980", "2401915", "2412591", "2169331", "2089056", "2442308", "2254140", "2445954", "2324347", "2367402", "2432557"];
+    var idcCount = 0;
+    idcIds.forEach(function(id){
+      if(!extra[id]) extra[id] = {};
+      if(!extra[id]['Exempted Category']){
+        extra[id]['Exempted Category'] = 'IDC';
+        idcCount++;
+      }
+    });
+
+    localStorage.setItem(LS_EXTRA_KEY, JSON.stringify(extra));
+    localStorage.setItem(DONE_KEY, '1');
+    console.log('[TenureTrack patch v2] WIP→Exempted: ' + wipCount + ', IDC set: ' + idcCount);
+  } catch(e) {
+    console.error('[TenureTrack patch v2] Failed:', e);
+  }
+})();
+</script>
+
 </body>
 </html>
